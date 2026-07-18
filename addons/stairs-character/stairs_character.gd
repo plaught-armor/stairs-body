@@ -13,9 +13,8 @@ class_name StairsCharacter
 
 # Private variables
 
-# Holds the margin from the player's collider, resolved once on first use.
+# Holds the margin from the player's collider, resolved once when the node is ready.
 var _collider_margin: float = 0.0
-var _margin_resolved: bool = false
 
 # We don't want to take the player's vertical speed into account, usually
 const _HORIZONTAL: Vector3 = Vector3(1, 0, 1)
@@ -52,8 +51,6 @@ var desired_velocity: Vector3 = Vector3.ZERO
 # silently disabled every step up. This function is the one thing every user
 # provably calls.
 func move_and_stair_step():
-	_resolve_margin()
-
 	was_grounded = grounded
 	grounded = is_on_floor()
 
@@ -67,15 +64,23 @@ func move_and_stair_step():
 	force_stair_step = false
 
 
-# Resolved on first use rather than in _ready: this class is meant to be
+# Hooked to NOTIFICATION_READY rather than to _ready(): this class is meant to be
 # subclassed, and a subclass defining its own _ready replaces the parent's, which
 # left the margin at 0.0 and ran every motion test with the wrong value.
-# One-shot, fails loud, then trusted.
-func _resolve_margin() -> void:
-	if _margin_resolved:
-		return
-	_margin_resolved = true
+# _notification is the one virtual Godot dispatches to *every* script in the
+# inheritance chain, so a subclass cannot shadow this even by overriding
+# _notification itself. Verified on 4.8.dev, both bodies run, base first.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_READY:
+		_resolve_margin()
 
+
+# Resolved here, then trusted (M10) - the step functions read _collider_margin
+# directly and never re-check. Runs again if NOTIFICATION_READY re-fires, which
+# only happens after request_ready(), and re-resolving is the right answer there:
+# the collider may have been swapped while the node was out of the tree. The
+# warnings repeat in that case, which is a fair trade for not going stale.
+func _resolve_margin() -> void:
 	if collider == null:
 		# Upstream hardcoded this node name. Kept as a fallback so existing
 		# scenes keep working without reassigning the export.
@@ -114,8 +119,6 @@ func _resolve_margin() -> void:
 
 
 func stair_step_down() -> void:
-	_resolve_margin()
-
 	# Don't step down if we weren't on the ground last physics frame
 	if was_grounded == false || velocity.y >= 0:
 		return
@@ -136,8 +139,6 @@ func stair_step_down() -> void:
 
 
 func stair_step_up() -> void:
-	_resolve_margin()
-
 	if (grounded == false && force_stair_step == false):
 		return
 

@@ -60,6 +60,7 @@ func _run_all() -> void:
 	await _case_09_flags_cleared()
 	await _case_10_margin_from_export()
 	await _case_11_legacy_collider_node()
+	await _case_12_subclass_notification()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -351,15 +352,20 @@ func _case_10_margin_from_export() -> void:
 	_add_ground(world, 1.0)
 	var c: StairsCharacter = _add_character(world, SUBCLASS_SCRIPT, 0.0)
 
-	var margin_before: float = c._collider_margin
+	# Resolved off NOTIFICATION_READY, which the subclass cannot shadow, so it is
+	# already correct here without a single move_and_stair_step call.
+	# Read through get() because the resolved margin is private and the linter has
+	# no per-line ignore; the value itself is what this case exists to assert.
+	var margin_at_ready: float = c.get(&"_collider_margin")
 	await _simulate(c, Vector3.ZERO, 2)
+	var margin_after: float = c.get(&"_collider_margin")
 
 	_check(
 		"10 collider margin resolves from the export under a subclass _ready",
-		margin_before == 0.0 and is_equal_approx(c._collider_margin, COLLIDER_MARGIN),
+		is_equal_approx(margin_at_ready, COLLIDER_MARGIN),
 		(
-			"before=%.4f after=%.4f expected 0.0 then %.4f"
-			% [margin_before, c._collider_margin, COLLIDER_MARGIN]
+			"at ready=%.4f after stepping=%.4f expected %.4f"
+			% [margin_at_ready, margin_after, COLLIDER_MARGIN]
 		),
 	)
 	world.queue_free()
@@ -377,9 +383,36 @@ func _case_11_legacy_collider_node() -> void:
 	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
 
 	var on_step: bool = absf(c.global_position.y - (REST_Y + 0.2)) < EPS
+	var margin: float = c.get(&"_collider_margin")
 	_check(
 		"11 legacy $Collider node still resolves the margin",
-		on_step and is_equal_approx(c._collider_margin, COLLIDER_MARGIN),
-		"pos=%v margin=%.4f expected y~%.2f" % [c.global_position, c._collider_margin, REST_Y + 0.2],
+		on_step and is_equal_approx(margin, COLLIDER_MARGIN),
+		"pos=%v margin=%.4f expected y~%.2f" % [c.global_position, margin, REST_Y + 0.2],
+	)
+	world.queue_free()
+
+
+## The refactor that moved margin resolution off `_ready` and onto
+## NOTIFICATION_READY rests on one empirical property of the engine: Godot
+## dispatches `_notification` to every script in the inheritance chain rather
+## than letting the most-derived override replace it, so a subclass cannot
+## shadow it the way it shadows `_ready`. That is the whole justification, and
+## it is a property of a dev build, so it gets pinned by a test: both bodies
+## must run, the base one having resolved the margin.
+func _case_12_subclass_notification() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	var c: StairsCharacter = _add_character(world, SUBCLASS_SCRIPT, 0.0)
+
+	var margin: float = c.get(&"_collider_margin")
+	var subclass_ran: int = c.get(&"custom_notifications")
+
+	_check(
+		"12 subclass _notification does not shadow the parent's",
+		is_equal_approx(margin, COLLIDER_MARGIN) and subclass_ran == 1,
+		(
+			"margin=%.4f subclass_notifications=%d expected %.4f and 1"
+			% [margin, subclass_ran, COLLIDER_MARGIN]
+		),
 	)
 	world.queue_free()
