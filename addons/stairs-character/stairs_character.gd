@@ -2,8 +2,11 @@ extends CharacterBody3D
 class_name StairsCharacter
 
 @export_category("Stair Stepping")
-## The max height the character can step up or down
-@export var _step_height: float = 0.33
+## Max height the character can step up onto, and be snapped down onto.
+## Rule of thumb: 0.15-0.25 x character height, so the default suits a ~2 m one.
+## Scale this with your character - the ratio travels, the absolute value does not.
+## Past ~0.25 x height a character starts silently climbing crates and low walls.
+@export var step_height: float = 0.33
 
 ## The character's collision shape. Margin should be as low as you can get it
 ## without snagging on edges. A CylinderShape3D is strongly recommended: a
@@ -33,10 +36,6 @@ var was_grounded: bool
 # been able to land on a ledge but snagged just below it.
 # Cleared by move_and_stair_step, so it only applies to the frame you set it in.
 var force_stair_step: bool = false
-
-# Similarly, you can modify this and it will reset after the frame.
-# If set, will be used in place of _stepHeight.
-var temp_step_height: float = 0
 
 # DesiredVelocity should be set in your character controller just so we know where we _want_ to go.
 # Set it before you call move_and_stair_step, which consumes it and then clears it.
@@ -73,6 +72,31 @@ func move_and_stair_step():
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_READY:
 		_resolve_margin()
+
+
+# Compatibility shim for scenes authored against the old `_step_height` name.
+# Godot silently drops a saved property whose name no longer exists on the
+# script, so without this a character that was tuned to 0.5 would come back at
+# the 0.33 default with nothing logged - the tuning just quietly disappears.
+# Unknown properties are routed here at load time, so the authored value lands.
+#
+# A scene storing both names is the one case to know about: Godot applies stored
+# properties in the order they appear in the .tscn, so if `_step_height` sits
+# below `step_height` it wins, and the newer value is the one that gets lost.
+# Re-saving fixes it permanently, since the old name is no longer serialised.
+# Drop this at the next breaking release.
+func _set(property: StringName, value: Variant) -> bool:
+	if property != &"_step_height":
+		return false
+
+	step_height = value
+	push_warning(
+		(
+			"[StairsCharacter] '_step_height' has been renamed to 'step_height' - "
+			+ "the saved value was applied, re-save the scene to update it"
+		)
+	)
+	return true
 
 
 # Resolved here, then trusted (M10) - the step functions read _collider_margin
@@ -127,7 +151,7 @@ func stair_step_down() -> void:
 	var parameters = PhysicsTestMotionParameters3D.new()
 
 	parameters.from = global_transform
-	parameters.motion = Vector3.DOWN * _step_height
+	parameters.motion = Vector3.DOWN * step_height
 	parameters.margin = _collider_margin
 
 	# Nothing to step down on
@@ -170,7 +194,7 @@ func stair_step_up() -> void:
 	motion_transform = motion_transform.translated(result.get_travel())
 
 	# Raise up to ceiling - can't walk on steps if there's a low ceiling
-	var step_up = _step_height * Vector3.UP
+	var step_up = step_height * Vector3.UP
 	parameters.from = motion_transform
 	parameters.motion = step_up
 	PhysicsServer3D.body_test_motion(get_rid(), parameters, result)

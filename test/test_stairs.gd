@@ -61,6 +61,9 @@ func _run_all() -> void:
 	await _case_10_margin_from_export()
 	await _case_11_legacy_collider_node()
 	await _case_12_subclass_notification()
+	await _case_13_step_down_bounded_by_step_height()
+	await _case_14_step_up_bounded_by_step_height()
+	await _case_15_legacy_step_height_property()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -414,5 +417,91 @@ func _case_12_subclass_notification() -> void:
 			"margin=%.4f subclass_notifications=%d expected %.4f and 1"
 			% [margin, subclass_ran, COLLIDER_MARGIN]
 		),
+	)
+	world.queue_free()
+
+
+## Counts the frames the character spent off the floor. A successful step down
+## keeps it planted the whole way; a rejected one lets it free-fall over the
+## edge, which is the difference the two cases below turn on.
+func _simulate_counting_airborne(c: StairsCharacter, horizontal: Vector3, frames: int) -> int:
+	var airborne: int = 0
+	for _i: int in frames:
+		await get_tree().physics_frame
+		c.velocity.x = horizontal.x
+		c.velocity.z = horizontal.z
+		c.velocity.y -= GRAVITY * DELTA
+		c.desired_velocity = horizontal
+		c.move_and_stair_step()
+		if not c.is_on_floor():
+			airborne += 1
+	return airborne
+
+
+## Case 5's world, but with step_height too low to cover the drop. The snap must
+## be refused, so the character goes over the edge instead of walking down it.
+## Case 5 is the same world at the default height, where the snap succeeds, so
+## the pair pins step_height as the thing that bounds the downward snap.
+func _case_13_step_down_bounded_by_step_height() -> void:
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
+	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.7, 0.0))
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	c.step_height = 0.05
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	var airborne: int = await _simulate_counting_airborne(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+
+	# `> 0` is a binary signal here, not a thin threshold: measured on this setup,
+	# the snapping case reports exactly 0 airborne frames, because the snap keeps
+	# the body planted across the edge rather than letting it leave the floor for
+	# a frame and catching it after.
+	_check(
+		"13 step down is bounded by step_height",
+		airborne > 0,
+		"airborne_frames=%d expected >0 (a 0.20 drop must not snap at 0.05)" % airborne,
+	)
+	world.queue_free()
+
+
+## Case 2's world - a 0.6 step the default rejects - with step_height raised past
+## it. The climb must now succeed. Case 2 is the same world at the default
+## height, where it is refused, so the pair pins step_height as the thing that
+## bounds the climb.
+func _case_14_step_up_bounded_by_step_height() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, 0.6)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	c.step_height = 0.7
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+
+	var on_step: bool = absf(c.global_position.y - (REST_Y + 0.6)) < EPS
+	_check(
+		"14 step up is bounded by step_height",
+		on_step and c.global_position.x > 1.0,
+		"pos=%v expected y~%.2f, x>1.0" % [c.global_position, REST_Y + 0.6],
+	)
+	world.queue_free()
+
+
+## Scenes authored against the old `_step_height` name must not lose their
+## tuning on upgrade. Godot drops saved properties that no longer exist on
+## the script without saying anything, so the addon intercepts the old name in
+## `_set` - which is the same path a scene load takes when it applies a stored
+## property that has no matching field.
+func _case_15_legacy_step_height_property() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+
+	c.set(&"_step_height", 0.5)
+
+	_check(
+		"15 the old _step_height property name still applies",
+		is_equal_approx(c.step_height, 0.5),
+		"step_height=%.3f expected 0.5" % c.step_height,
 	)
 	world.queue_free()
