@@ -132,6 +132,29 @@ func _set(property: StringName, value: Variant) -> bool:
 	if property != &"_step_height":
 		return false
 
+	# `value` arrives as a Variant, and `step_height` is a typed float, so a
+	# stored value that is not a number aborts this function on the assignment
+	# below with a bare engine error - "Trying to assign value of type 'String'
+	# to a variable of type 'float'" - naming neither the addon nor the property
+	# that caused it, and skipping the warning below on the way out. Refusing it
+	# here is what turns that into a message a user can act on.
+	#
+	# The `true` is idiom rather than mechanism: for a property Godot has no
+	# other home for, returning true and returning false were measured to behave
+	# identically at scene load, so the push_error is doing the actual work. True
+	# is still the honest answer - the shim did handle this property, by
+	# rejecting it on purpose.
+	var value_type: int = typeof(value)
+	if value_type != TYPE_FLOAT and value_type != TYPE_INT:
+		push_error(
+			(
+				"[StairsCharacter] '_step_height' was stored as %s, expected a number - "
+				% type_string(value_type)
+				+ "the value was discarded, set 'step_height' on the node instead"
+			)
+		)
+		return true
+
 	step_height = value
 	push_warning(
 		(

@@ -71,6 +71,7 @@ func _run_all() -> void:
 	await _case_20_step_at_the_top_of_a_ramp()
 	await _case_21_ceiling_flush_on_the_head()
 	await _case_22_vertical_intent_is_ignored()
+	await _case_23_legacy_step_height_rejects_non_numbers()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -716,3 +717,42 @@ func _case_22_vertical_intent_is_ignored() -> void:
 			% [rises]
 		),
 	)
+
+
+## Case 15 covers the legacy `_step_height` name arriving with the float a scene
+## would have stored. This is the same path fed something that is not a number,
+## which a hand-edited scene or any caller reaching the property by name can do.
+##
+## `step_height` is a typed float, so the shim has to refuse a non-number rather
+## than assign it. Note what this case does and does not pin: the resulting
+## `step_height` is the same either way, because an unrefused assignment aborts
+## `_set` on a type error and leaves the default in place. What the refusal buys
+## is the reporting, which this harness cannot assert on - a bare "Trying to
+## assign value of type 'String' to a variable of type 'float'", naming neither
+## the addon nor the property, becomes an error that names both.
+##
+## So this case is a behaviour pin, not a regression test: it fails if a future
+## edit makes a bad value clobber `step_height` with 0.0, or makes a good int
+## stop applying.
+func _case_23_legacy_step_height_rejects_non_numbers() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+
+	var default_height: float = c.step_height
+	c.set(&"_step_height", "nonsense")
+	var after_string: float = c.step_height
+
+	# An int is a number and still means what the designer typed, so it applies.
+	c.set(&"_step_height", 1)
+	var after_int: float = c.step_height
+
+	_check(
+		"23 the legacy _step_height name refuses a non-numeric value",
+		is_equal_approx(after_string, default_height) and is_equal_approx(after_int, 1.0),
+		(
+			"after_string=%.3f (expected the %.3f default kept), after_int=%.3f (expected 1.0)"
+			% [after_string, default_height, after_int]
+		),
+	)
+	world.queue_free()
