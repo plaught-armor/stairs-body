@@ -90,7 +90,7 @@ var desired_velocity: Vector3 = Vector3.ZERO
 # _physics_process replaces the parent's, which left grounded stuck at false and
 # silently disabled every step up. This function is the one thing every user
 # provably calls.
-func move_and_stair_step():
+func move_and_stair_step() -> void:
 	was_grounded = grounded
 	grounded = is_on_floor()
 
@@ -185,13 +185,13 @@ func _resolve_margin() -> void:
 
 func stair_step_down() -> void:
 	# Don't step down if we weren't on the ground last physics frame
-	if was_grounded == false || velocity.y >= 0:
+	if not was_grounded or velocity.y >= 0:
 		return
 
 	_params.from = global_transform
 	_params.motion = Vector3.DOWN * step_height
 	# Nothing to step down on
-	if PhysicsServer3D.body_test_motion(get_rid(), _params, _result) == false:
+	if not PhysicsServer3D.body_test_motion(get_rid(), _params, _result):
 		return
 
 	global_transform = global_transform.translated(_result.get_travel())
@@ -202,26 +202,28 @@ func stair_step_down() -> void:
 
 
 func stair_step_up() -> void:
-	if (grounded == false && force_stair_step == false):
+	if not grounded and not force_stair_step:
 		return
 
-	var horizontal_velocity = velocity * _HORIZONTAL
-	var testing_velocity = horizontal_velocity if horizontal_velocity != Vector3.ZERO else desired_velocity
+	var horizontal_velocity: Vector3 = velocity * _HORIZONTAL
+	var testing_velocity: Vector3 = (
+		horizontal_velocity if horizontal_velocity != Vector3.ZERO else desired_velocity
+	)
 
 	# Not moving or attempting to move, skip stair check
 	if testing_velocity == Vector3.ZERO:
 		return
 
 	# This variable gets reused for all the following checks
-	var motion_transform = global_transform
+	var motion_transform: Transform3D = global_transform
 
 	# If you use this function you don't need to pass delta everywhere :D
-	var distance = testing_velocity * get_physics_process_delta_time()
+	var distance: Vector3 = testing_velocity * get_physics_process_delta_time()
 	_params.from = motion_transform
 	_params.motion = distance
 
 	# No stair step to do, we didn't hit any walls
-	if PhysicsServer3D.body_test_motion(get_rid(), _params, _result) == false:
+	if not PhysicsServer3D.body_test_motion(get_rid(), _params, _result):
 		return
 
 	# Contact 0 is the only contact, since max_collisions is left at its default
@@ -236,17 +238,17 @@ func stair_step_up() -> void:
 		return
 
 	# Move to collision
-	var remainder = _result.get_remainder()
+	var remainder: Vector3 = _result.get_remainder()
 	motion_transform = motion_transform.translated(_result.get_travel())
 
 	# Raise up to ceiling - can't walk on steps if there's a low ceiling
-	var step_up = step_height * Vector3.UP
+	var step_up: Vector3 = step_height * Vector3.UP
 	_params.from = motion_transform
 	_params.motion = step_up
 	PhysicsServer3D.body_test_motion(get_rid(), _params, _result)
 	# GetTravel will be full length if we didn't hit anything
 	motion_transform = motion_transform.translated(_result.get_travel())
-	var step_up_distance = _result.get_travel().length()
+	var step_up_distance: float = _result.get_travel().length()
 
 	# A ceiling left us no room to rise, so there is no height to step onto and
 	# the last two sweeps would only confirm it. Movement below the collision
@@ -259,7 +261,7 @@ func stair_step_up() -> void:
 	_params.from = motion_transform
 	_params.motion = remainder
 	PhysicsServer3D.body_test_motion(get_rid(), _params, _result)
-	var forward_distance = _result.get_travel().length()
+	var forward_distance: float = _result.get_travel().length()
 	motion_transform = motion_transform.translated(_result.get_travel())
 
 	# Raising the body did not get it past the obstacle, so whatever we walked
@@ -281,13 +283,13 @@ func stair_step_up() -> void:
 	_params.motion = Vector3.DOWN * step_up_distance
 
 	# Don't bother with the rest if we're not actually gonna land back down on something
-	if PhysicsServer3D.body_test_motion(get_rid(), _params, _result) == false:
+	if not PhysicsServer3D.body_test_motion(get_rid(), _params, _result):
 		return
 
 	motion_transform = motion_transform.translated(_result.get_travel())
 
-	var surface_normal = _result.get_collision_normal(0)
-	if (surface_normal.angle_to(Vector3.UP) > floor_max_angle):
+	var surface_normal: Vector3 = _result.get_collision_normal(0)
+	if surface_normal.angle_to(Vector3.UP) > floor_max_angle:
 		return #Can't stand on the thing we're trying to step on anyway
 
 	# Move player to match the step height we just found
