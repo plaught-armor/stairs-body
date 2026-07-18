@@ -67,6 +67,8 @@ func _run_all() -> void:
 	await _case_16_step_up_signals()
 	await _case_17_no_signal_when_blocked()
 	await _case_18_step_down_signals()
+	await _case_19_walkable_ramp()
+	await _case_20_step_at_the_top_of_a_ramp()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -582,5 +584,62 @@ func _case_18_step_down_signals() -> void:
 		"18 snapping down emits stepped_down and stepped",
 		counts["down"] >= 1 and counts["any"] == counts["up"] + counts["down"],
 		"up=%d down=%d any=%d expected down>=1 and any==up+down" % [counts["up"], counts["down"], counts["any"]],
+	)
+	world.queue_free()
+
+
+## A ramp shallow enough to walk up is move_and_slide's job, not the step
+## check's. The character must still get up it, and must not report a stair step
+## for doing so.
+func _case_19_walkable_ramp() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 12.0)
+	# A 30 degree slab, inside the default floor_max_angle of 45, sunk so its
+	# lower edge meets the ground rather than presenting an end face to walk into.
+	_add_box(world, Vector3(12.0, 0.5, 8.0), Vector3(6.2, 2.78, 0.0), 30.0)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var counts: Dictionary = _count_signals(c)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), 90)
+
+	_check(
+		"19 a walkable ramp is climbed without reporting a step",
+		c.global_position.y > REST_Y + 0.5 and counts["up"] == 0,
+		(
+			"y=%.3f up=%d expected y>%.2f and no stepped_up"
+			% [c.global_position.y, counts["up"], REST_Y + 0.5]
+		),
+	)
+	world.queue_free()
+
+
+## The compound case the early-out could plausibly break: a walkable ramp with a
+## real step waiting at the top of it. While on the ramp the forward sweep keeps
+## hitting the ramp, so the step check bails every frame - correctly. The step
+## must still be taken once the character reaches it, rather than the early-out
+## swallowing it and stalling the character against the riser.
+func _case_20_step_at_the_top_of_a_ramp() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	# Ramp rising from the ground at x = 1 to the plateau top at y = 1.
+	_add_box(world, Vector3(2.0, 0.3, 8.0), Vector3(1.945, 0.37, 0.0), 30.0)
+	# Plateau at y = 1, then a 0.2 step up to y = 1.2 partway along it.
+	_add_box(world, Vector3(5.3, 2.0, 8.0), Vector3(5.35, 0.0, 0.0))
+	_add_box(world, Vector3(3.0, 2.0, 8.0), Vector3(6.5, 0.2, 0.0))
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var counts: Dictionary = _count_signals(c)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), 150)
+
+	var on_step: bool = absf(c.global_position.y - (REST_Y + 1.2)) < EPS
+	_check(
+		"20 a step at the top of a ramp is still taken",
+		on_step and counts["up"] >= 1,
+		(
+			"pos=%v up=%d expected y~%.2f and at least one stepped_up"
+			% [c.global_position, counts["up"], REST_Y + 1.2]
+		),
 	)
 	world.queue_free()

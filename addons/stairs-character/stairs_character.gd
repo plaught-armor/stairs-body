@@ -46,7 +46,9 @@ signal stepped_down
 # `margin` is the one field meant to persist - it is the resolved collider margin
 # and the only copy of it. If anything ever sets the other parameter fields
 # (exclude_bodies, max_collisions, recovery_as_collision) it must reset them too,
-# because unlike a fresh instance this one does not start from defaults.
+# because unlike a fresh instance this one does not start from defaults. Raising
+# max_collisions in particular means revisiting both get_collision_normal(0)
+# calls below, which are only unambiguous while a sweep reports a single contact.
 var _result: PhysicsTestMotionResult3D = PhysicsTestMotionResult3D.new()
 var _params: PhysicsTestMotionParameters3D = PhysicsTestMotionParameters3D.new()
 
@@ -66,10 +68,14 @@ const _DEFAULT_MARGIN: float = 0.01
 var grounded: bool
 var was_grounded: bool
 
-# Force a stair step check this frame
+# Force a stair step check this frame even when not grounded.
 # I use this for things like wall jumps, where it feels like you should've
 # been able to land on a ledge but snagged just below it.
 # Cleared by move_and_stair_step, so it only applies to the frame you set it in.
+# It lifts the grounded requirement, not every check: a forward collision with a
+# surface shallow enough to walk on still short-circuits the step, since
+# move_and_slide handles that case. Ledges present a vertical face, so the ones
+# this flag exists for are unaffected.
 var force_stair_step: bool = false
 
 # DesiredVelocity should be set in your character controller just so we know where we _want_ to go.
@@ -216,6 +222,17 @@ func stair_step_up() -> void:
 
 	# No stair step to do, we didn't hit any walls
 	if PhysicsServer3D.body_test_motion(get_rid(), _params, _result) == false:
+		return
+
+	# Contact 0 is the only contact, since max_collisions is left at its default
+	# of 1, and it is the earliest point of impact.
+	# If what we hit is shallow enough to walk on, move_and_slide will walk up it
+	# and there is no step to take. Bailing here skips the three remaining sweeps,
+	# which is most of the cost of this function: a sweep is ~4.3 us against the
+	# ~0.66 us the query objects cost to allocate (test/bench_sweep.gd). Without
+	# this, a character walking up a ramp runs the full check and succeeds on
+	# nearly every frame, stair stepping its way up a slope.
+	if _result.get_collision_normal(0).angle_to(Vector3.UP) <= floor_max_angle:
 		return
 
 	# Move to collision
