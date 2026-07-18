@@ -34,7 +34,7 @@ reads the margin off the shape you assign and warns if it is above 0.01.
 |---|---|
 | `collider` | The character's `CollisionShape3D`. If left unassigned, a child node named `Collider` is used, which is how older scenes were set up. |
 | `step_height` | How high the character can step up, and be snapped down onto. Default `0.33`, which suits a ~2 m character - the useful part is the ratio, roughly 0.15-0.25 of character height, since the absolute value does not survive rescaling your character. |
-| `desired_velocity` | Where the controller *wants* to go this frame. Only used when actual horizontal velocity is zero, which is what makes stepping up from a standstill work. Cleared for you after each call. |
+| `desired_velocity` | Where the controller *wants* to go this frame. Only used when actual horizontal velocity is zero, which is what makes stepping up from a standstill work. Any vertical component is ignored, so handing over a whole movement vector with gravity already in it is fine. Cleared for you after each call. |
 | `force_stair_step` | Runs the step check even when not grounded, for cases like a wall jump that should have caught a ledge but snagged just below it. Cleared for you after each call. |
 | `grounded` / `was_grounded` | Ground state as the addon sees it, which is not always `is_on_floor()` - the step logic sometimes moves the body in ways that leave `is_on_floor()` reading false. Refreshed inside `move_and_stair_step()`, so read them after the call rather than before. |
 

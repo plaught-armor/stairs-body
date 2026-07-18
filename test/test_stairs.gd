@@ -70,6 +70,7 @@ func _run_all() -> void:
 	await _case_19_walkable_ramp()
 	await _case_20_step_at_the_top_of_a_ramp()
 	await _case_21_ceiling_flush_on_the_head()
+	await _case_22_vertical_intent_is_ignored()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -668,3 +669,50 @@ func _case_21_ceiling_flush_on_the_head() -> void:
 		"peak=%.3f up=%d expected no rise and no stepped_up" % [peak, counts["up"]],
 	)
 	world.queue_free()
+
+
+## Case 7 proves the `desired_velocity` fallback works when the controller hands
+## over a flat vector. This is the same world with a vertical component in it,
+## which is what a controller that assigns its whole movement intent - input plus
+## gravity - to `desired_velocity` produces, the usage the README describes.
+##
+## The fallback has to be flattened the way actual velocity already is. Left
+## alone, a downward component aims the first sweep forward *and down*, so it
+## reaches the ground before the step face, the ground reports a walkable normal,
+## and the walkable-slope bail throws the step away. Measured on this world:
+## intent (3, -1, 0) rose 0.0000 against (3, 0, 0)'s 0.2007.
+##
+## The purely vertical arm is the other half: a vector with no horizontal
+## component at all is not intent to move anywhere, so it has to fall through the
+## zero-check rather than run four sweeps on a straight-up test velocity.
+func _case_22_vertical_intent_is_ignored() -> void:
+	var rises: PackedFloat32Array = []
+	for intent: Vector3 in [
+		Vector3(WALK_SPEED, -1.0, 0.0),
+		Vector3(WALK_SPEED, 3.0, 0.0),
+		Vector3(0.0, -5.0, 0.0),
+	]:
+		var world: Node3D = _new_world()
+		_add_ground(world, 1.0)
+		_add_step(world, 0.2)
+		# Parked with the cylinder just touching the step face, as in case 7.
+		var c: StairsCharacter = _add_character(world, StairsCharacter, 1.0 - BODY_RADIUS - 0.005)
+
+		await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+		await get_tree().physics_frame
+		c.velocity = Vector3(0.0, -GRAVITY * DELTA, 0.0)
+
+		var before: float = c.global_position.y
+		c.desired_velocity = intent
+		c.stair_step_up()
+		rises.append(c.global_position.y - before)
+		world.queue_free()
+
+	_check(
+		"22 a vertical component in desired_velocity does not change the step",
+		rises[0] > 0.1 and rises[1] > 0.1 and absf(rises[2]) < EPS,
+		(
+			"rises=%s expected the two forward intents to step and the vertical one not to"
+			% [rises]
+		),
+	)

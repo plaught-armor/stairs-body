@@ -81,6 +81,8 @@ var force_stair_step: bool = false
 # DesiredVelocity should be set in your character controller just so we know where we _want_ to go.
 # Set it before you call move_and_stair_step, which consumes it and then clears it.
 # Should match the direction where your input wants to take you.
+# Only the horizontal part is read, so passing a whole movement vector with
+# gravity already folded in is fine.
 var desired_velocity: Vector3 = Vector3.ZERO
 
 
@@ -205,9 +207,18 @@ func stair_step_up() -> void:
 	if not grounded and not force_stair_step:
 		return
 
+	# The fallback is flattened the same way actual velocity is. A controller that
+	# hands over its whole movement intent - input plus gravity - puts a vertical
+	# component in here, and an unflattened one aims the first sweep forward and
+	# down, so it reaches the ground before the step face. The ground reports a
+	# walkable normal and the bail below throws away a step that should have
+	# happened. Flattening also lets a purely vertical intent fall through the
+	# zero-check, rather than running four sweeps on a straight-up test velocity.
 	var horizontal_velocity: Vector3 = velocity * _HORIZONTAL
 	var testing_velocity: Vector3 = (
-		horizontal_velocity if horizontal_velocity != Vector3.ZERO else desired_velocity
+		horizontal_velocity
+		if horizontal_velocity != Vector3.ZERO
+		else desired_velocity * _HORIZONTAL
 	)
 
 	# Not moving or attempting to move, skip stair check
