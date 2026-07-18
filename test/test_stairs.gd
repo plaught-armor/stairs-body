@@ -64,6 +64,9 @@ func _run_all() -> void:
 	await _case_13_step_down_bounded_by_step_height()
 	await _case_14_step_up_bounded_by_step_height()
 	await _case_15_legacy_step_height_property()
+	await _case_16_step_up_signals()
+	await _case_17_no_signal_when_blocked()
+	await _case_18_step_down_signals()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -503,5 +506,74 @@ func _case_15_legacy_step_height_property() -> void:
 		"15 the old _step_height property name still applies",
 		is_equal_approx(c.step_height, 0.5),
 		"step_height=%.3f expected 0.5" % c.step_height,
+	)
+	world.queue_free()
+
+
+## Counts every step signal a character emits. A Dictionary rather than plain
+## locals because a lambda captures locals by value (H6) - the container is a
+## reference, so the increments are visible to the caller.
+func _count_signals(c: StairsCharacter) -> Dictionary:
+	var counts: Dictionary = {"any": 0, "up": 0, "down": 0}
+	c.stepped.connect(func() -> void: counts["any"] += 1)
+	c.stepped_up.connect(func() -> void: counts["up"] += 1)
+	c.stepped_down.connect(func() -> void: counts["down"] += 1)
+	return counts
+
+
+func _case_16_step_up_signals() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, 0.2)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var counts: Dictionary = _count_signals(c)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+
+	# `stepped` is the sum of the two directional signals, never its own event.
+	_check(
+		"16 stepping up emits stepped_up and stepped",
+		counts["up"] >= 1 and counts["any"] == counts["up"] + counts["down"],
+		"up=%d down=%d any=%d expected up>=1 and any==up+down" % [counts["up"], counts["down"], counts["any"]],
+	)
+	world.queue_free()
+
+
+## The signals mark a position change, so a step the addon refused must be
+## silent. This is the case that catches an emit placed above an early return
+## rather than on the success path.
+func _case_17_no_signal_when_blocked() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, 0.6)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var counts: Dictionary = _count_signals(c)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+
+	_check(
+		"17 a blocked step emits nothing",
+		counts["any"] == 0 and counts["up"] == 0 and counts["down"] == 0,
+		"up=%d down=%d any=%d expected 0 for all" % [counts["up"], counts["down"], counts["any"]],
+	)
+	world.queue_free()
+
+
+func _case_18_step_down_signals() -> void:
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
+	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.7, 0.0))
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var counts: Dictionary = _count_signals(c)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+
+	_check(
+		"18 snapping down emits stepped_down and stepped",
+		counts["down"] >= 1 and counts["any"] == counts["up"] + counts["down"],
+		"up=%d down=%d any=%d expected down>=1 and any==up+down" % [counts["up"], counts["down"], counts["any"]],
 	)
 	world.queue_free()

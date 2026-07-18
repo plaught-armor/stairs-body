@@ -1,6 +1,23 @@
 extends CharacterBody3D
 class_name StairsCharacter
 
+## Emitted on any stair step, in either direction, right after the direction
+## specific signal below. It reports one step rather than one frame, so it fires
+## twice in a frame where the character steps up onto a plateau and is then
+## snapped down off the far edge.
+signal stepped
+## Emitted when the character has been raised onto a higher surface.
+## Fires *before* this frame's move_and_slide, so a handler that writes to
+## velocity still affects the movement this frame.
+signal stepped_up
+## Emitted when the character has been snapped down onto a lower surface.
+## Fires *after* this frame's move_and_slide, unlike stepped_up, so a handler
+## that writes to velocity only affects the next frame.
+signal stepped_down
+
+# Handlers run inside move_and_stair_step, so they must not call back into it,
+# and must not free the character - use queue_free if you need to.
+
 @export_category("Stair Stepping")
 ## Max height the character can step up onto, and be snapped down onto.
 ## Rule of thumb: 0.15-0.25 x character height, so the default suits a ~2 m one.
@@ -161,6 +178,9 @@ func stair_step_down() -> void:
 	global_transform = global_transform.translated(result.get_travel())
 	apply_floor_snap()
 
+	stepped_down.emit()
+	stepped.emit()
+
 
 func stair_step_up() -> void:
 	if (grounded == false && force_stair_step == false):
@@ -225,3 +245,6 @@ func stair_step_up() -> void:
 
 	# Move player to match the step height we just found
 	global_position.y = motion_transform.origin.y
+
+	stepped_up.emit()
+	stepped.emit()
