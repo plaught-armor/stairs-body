@@ -360,11 +360,11 @@ func _case_10_margin_from_export() -> void:
 
 	# Resolved off NOTIFICATION_READY, which the subclass cannot shadow, so it is
 	# already correct here without a single move_and_stair_step call.
-	# Read through get() because the resolved margin is private and the linter has
-	# no per-line ignore; the value itself is what this case exists to assert.
-	var margin_at_ready: float = c.get(&"_collider_margin")
+	# Read through get() because the query object is private and the linter has no
+	# per-line ignore; the resolved margin is what this case exists to assert.
+	var margin_at_ready: float = _resolved_margin(c)
 	await _simulate(c, Vector3.ZERO, 2)
-	var margin_after: float = c.get(&"_collider_margin")
+	var margin_after: float = _resolved_margin(c)
 
 	_check(
 		"10 collider margin resolves from the export under a subclass _ready",
@@ -389,7 +389,7 @@ func _case_11_legacy_collider_node() -> void:
 	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
 
 	var on_step: bool = absf(c.global_position.y - (REST_Y + 0.2)) < EPS
-	var margin: float = c.get(&"_collider_margin")
+	var margin: float = _resolved_margin(c)
 	_check(
 		"11 legacy $Collider node still resolves the margin",
 		on_step and is_equal_approx(margin, COLLIDER_MARGIN),
@@ -410,7 +410,7 @@ func _case_12_subclass_notification() -> void:
 	_add_ground(world, 1.0)
 	var c: StairsCharacter = _add_character(world, SUBCLASS_SCRIPT, 0.0)
 
-	var margin: float = c.get(&"_collider_margin")
+	var margin: float = _resolved_margin(c)
 	var subclass_ran: int = c.get(&"custom_notifications")
 
 	_check(
@@ -513,6 +513,13 @@ func _case_15_legacy_step_height_property() -> void:
 ## Counts every step signal a character emits. A Dictionary rather than plain
 ## locals because a lambda captures locals by value (H6) - the container is a
 ## reference, so the increments are visible to the caller.
+## The margin lives on the shared motion-test parameters, which is the only copy
+## of it the addon keeps.
+func _resolved_margin(c: StairsCharacter) -> float:
+	var params: PhysicsTestMotionParameters3D = c.get(&"_params")
+	return params.margin
+
+
 func _count_signals(c: StairsCharacter) -> Dictionary:
 	var counts: Dictionary = {"any": 0, "up": 0, "down": 0}
 	c.stepped.connect(func() -> void: counts["any"] += 1)

@@ -33,11 +33,29 @@ signal stepped_down
 
 # Private variables
 
-# Holds the margin from the player's collider, resolved once when the node is ready.
-var _collider_margin: float = 0.0
+# Scratch for the motion tests, held rather than allocated per call (P20).
+# Upstream built a fresh pair inside each step function, so up to four objects
+# per character per frame for pure scratch. Sharing one pair is safe because both
+# functions overwrite `from` and `motion` before every body_test_motion and read
+# the result immediately after, so nothing carries between calls.
+#
+# Worth what it costs, but only just: measured at 0.66 us per character per frame
+# (test/bench_alloc.gd), against roughly 30 us of stepping work, so about 2%. The
+# four body_test_motion sweeps dominate everything around them.
+#
+# `margin` is the one field meant to persist - it is the resolved collider margin
+# and the only copy of it. If anything ever sets the other parameter fields
+# (exclude_bodies, max_collisions, recovery_as_collision) it must reset them too,
+# because unlike a fresh instance this one does not start from defaults.
+var _result: PhysicsTestMotionResult3D = PhysicsTestMotionResult3D.new()
+var _params: PhysicsTestMotionParameters3D = PhysicsTestMotionParameters3D.new()
 
 # We don't want to take the player's vertical speed into account, usually
 const _HORIZONTAL: Vector3 = Vector3(1, 0, 1)
+
+# Fallback for a character with no usable collider, and the threshold past which
+# a margin is worth warning about.
+const _DEFAULT_MARGIN: float = 0.01
 
 # Public variables
 
@@ -116,8 +134,8 @@ func _set(property: StringName, value: Variant) -> bool:
 	return true
 
 
-# Resolved here, then trusted (M10) - the step functions read _collider_margin
-# directly and never re-check. Runs again if NOTIFICATION_READY re-fires, which
+# Resolved here, then trusted (M10) - the step functions use the resolved
+# _params.margin directly and never re-check. Runs again if NOTIFICATION_READY re-fires, which
 # only happens after request_ready(), and re-resolving is the right answer there:
 # the collider may have been swapped while the node was out of the tree. The
 # warnings repeat in that case, which is a fair trade for not going stale.
@@ -132,7 +150,7 @@ func _resolve_margin() -> void:
 			"[StairsCharacter] 'collider' is unassigned and no child CollisionShape3D named "
 			+ "'Collider' was found - using default margin"
 		)
-		_collider_margin = 0.01
+		_params.margin = _DEFAULT_MARGIN
 		return
 
 	if collider.shape == null:
@@ -140,14 +158,14 @@ func _resolve_margin() -> void:
 			"[StairsCharacter] collider '%s' has no shape assigned - using default margin"
 			% collider.name
 		)
-		_collider_margin = 0.01
+		_params.margin = _DEFAULT_MARGIN
 		return
 
-	_collider_margin = collider.shape.margin
-	if _collider_margin > 0.01:
+	_params.margin = collider.shape.margin
+	if _params.margin > _DEFAULT_MARGIN:
 		push_warning(
-			"[StairsCharacter] collider margin %.3f > 0.01, may snag on stair steps"
-			% _collider_margin
+			"[StairsCharacter] collider margin %.3f > %.2f, may snag on stair steps"
+			% [_params.margin, _DEFAULT_MARGIN]
 		)
 	if not (collider.shape is CylinderShape3D):
 		push_warning(
@@ -164,18 +182,13 @@ func stair_step_down() -> void:
 	if was_grounded == false || velocity.y >= 0:
 		return
 
-	var result = PhysicsTestMotionResult3D.new()
-	var parameters = PhysicsTestMotionParameters3D.new()
-
-	parameters.from = global_transform
-	parameters.motion = Vector3.DOWN * step_height
-	parameters.margin = _collider_margin
-
+	_params.from = global_transform
+	_params.motion = Vector3.DOWN * step_height
 	# Nothing to step down on
-	if PhysicsServer3D.body_test_motion(get_rid(), parameters, result) == false:
+	if PhysicsServer3D.body_test_motion(get_rid(), _params, _result) == false:
 		return
 
-	global_transform = global_transform.translated(result.get_travel())
+	global_transform = global_transform.translated(_result.get_travel())
 	apply_floor_snap()
 
 	stepped_down.emit()
@@ -193,54 +206,50 @@ func stair_step_up() -> void:
 	if testing_velocity == Vector3.ZERO:
 		return
 
-	var result = PhysicsTestMotionResult3D.new()
-	var parameters = PhysicsTestMotionParameters3D.new()
-	parameters.margin = _collider_margin
-
 	# This variable gets reused for all the following checks
 	var motion_transform = global_transform
 
 	# If you use this function you don't need to pass delta everywhere :D
 	var distance = testing_velocity * get_physics_process_delta_time()
-	parameters.from = motion_transform
-	parameters.motion = distance
+	_params.from = motion_transform
+	_params.motion = distance
 
 	# No stair step to do, we didn't hit any walls
-	if PhysicsServer3D.body_test_motion(get_rid(), parameters, result) == false:
+	if PhysicsServer3D.body_test_motion(get_rid(), _params, _result) == false:
 		return
 
 	# Move to collision
-	var remainder = result.get_remainder()
-	motion_transform = motion_transform.translated(result.get_travel())
+	var remainder = _result.get_remainder()
+	motion_transform = motion_transform.translated(_result.get_travel())
 
 	# Raise up to ceiling - can't walk on steps if there's a low ceiling
 	var step_up = step_height * Vector3.UP
-	parameters.from = motion_transform
-	parameters.motion = step_up
-	PhysicsServer3D.body_test_motion(get_rid(), parameters, result)
+	_params.from = motion_transform
+	_params.motion = step_up
+	PhysicsServer3D.body_test_motion(get_rid(), _params, _result)
 	# GetTravel will be full length if we didn't hit anything
-	motion_transform = motion_transform.translated(result.get_travel())
-	var step_up_distance = result.get_travel().length()
+	motion_transform = motion_transform.translated(_result.get_travel())
+	var step_up_distance = _result.get_travel().length()
 
 	# Move forward remaining distance
-	parameters.from = motion_transform
-	parameters.motion = remainder
-	PhysicsServer3D.body_test_motion(get_rid(), parameters, result)
-	motion_transform = motion_transform.translated(result.get_travel())
+	_params.from = motion_transform
+	_params.motion = remainder
+	PhysicsServer3D.body_test_motion(get_rid(), _params, _result)
+	motion_transform = motion_transform.translated(_result.get_travel())
 
 	# And set the collider back down again
-	parameters.from = motion_transform
+	_params.from = motion_transform
 	# But no further than how far we stepped up
-	parameters.motion = Vector3.DOWN * step_up_distance
+	_params.motion = Vector3.DOWN * step_up_distance
 
 	# Don't bother with the rest if we're not actually gonna land back down on something
-	if PhysicsServer3D.body_test_motion(get_rid(), parameters, result) == false:
+	if PhysicsServer3D.body_test_motion(get_rid(), _params, _result) == false:
 		return
 
-	motion_transform = motion_transform.translated(result.get_travel())
+	motion_transform = motion_transform.translated(_result.get_travel())
 
-	var surfaceNormal = result.get_collision_normal(0)
-	if (surfaceNormal.angle_to(Vector3.UP) > floor_max_angle):
+	var surface_normal = _result.get_collision_normal(0)
+	if (surface_normal.angle_to(Vector3.UP) > floor_max_angle):
 		return #Can't stand on the thing we're trying to step on anyway
 
 	# Move player to match the step height we just found
