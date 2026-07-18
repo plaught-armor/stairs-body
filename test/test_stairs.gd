@@ -69,6 +69,7 @@ func _run_all() -> void:
 	await _case_18_step_down_signals()
 	await _case_19_walkable_ramp()
 	await _case_20_step_at_the_top_of_a_ramp()
+	await _case_21_ceiling_flush_on_the_head()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -641,5 +642,29 @@ func _case_20_step_at_the_top_of_a_ramp() -> void:
 			"pos=%v up=%d expected y~%.2f and at least one stepped_up"
 			% [c.global_position, counts["up"], REST_Y + 1.2]
 		),
+	)
+	world.queue_free()
+
+
+## Case 3 leaves a little headroom; this leaves none at all, so the raise sweep
+## travels nothing. The step must be refused rather than the character being
+## shoved through the ceiling, and it is also the path that lets the check bail
+## before spending its last two sweeps.
+func _case_21_ceiling_flush_on_the_head() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, 0.2)
+	# Head is at y = 1.8, so this sits directly on it.
+	_add_box(world, Vector3(6.0, 1.0, 8.0), Vector3(2.0, 2.3, 0.0))
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var counts: Dictionary = _count_signals(c)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	var peak: float = await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+
+	_check(
+		"21 a ceiling flush on the head blocks the step",
+		peak < REST_Y + EPS and counts["up"] == 0,
+		"peak=%.3f up=%d expected no rise and no stepped_up" % [peak, counts["up"]],
 	)
 	world.queue_free()

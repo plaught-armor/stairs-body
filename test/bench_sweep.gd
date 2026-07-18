@@ -5,11 +5,34 @@ extends Node3D
 ##
 ##     godot --headless --path <repo root> res://test/bench_sweep.tscn
 ##
-## The point is to find where the per-character cost lives before optimising it.
-## Allocation work turned out to be ~2% (test/bench_alloc.gd); if the sweeps are
-## the rest, then the only lever that matters is running fewer of them.
+## Sweeps are what the step check costs, so the only lever on this path is
+## running fewer of them - allocation work is ~2% by comparison
+## (test/bench_alloc.gd).
+##
+## This times a sweep and stops there, deliberately. Timing move_and_stair_step
+## per scenario was tried and thrown away: at one character the run-to-run spread
+## is a few microseconds on identical code, wide enough to swallow the effect and
+## occasionally to reverse its sign. Sweep COUNTS are deterministic and are the
+## honest measure. To recount them, temporarily wrap the body_test_motion calls
+## in stairs_character.gd with a static counter and drive each scenario.
+##
+## Counted that way on 4.8.dev, sweeps per character per frame:
+##
+##     standing still              0.00   (both step functions bail on entry)
+##     walking, flat ground        1.00   (one forward sweep that hits nothing)
+##     walking up a ramp           1.00   (4.00 before the walkable-surface bail)
+##     walking off a ledge         1.02
+##     climbing a staircase        1.67
+##     pressed into a tall wall    2.90   (3.85 before the two bails below)
+##
+## The wall is the state worth caring about: players hold forward into geometry
+## for seconds at a time, and it is the only case that still runs a multi-sweep
+## check to reach a conclusion it reaches every frame.
 
 const SWEEP_SAMPLES: int = 20000
+const RUNS: int = 7
+const FRAMES: int = 120
+const WALK: float = 3.0
 
 var _body: CharacterBody3D
 var _params: PhysicsTestMotionParameters3D = PhysicsTestMotionParameters3D.new()
@@ -50,7 +73,6 @@ func _make_character(at: Vector3) -> StairsCharacter:
 func _run() -> void:
 	_add_box(Vector3(40.0, 1.0, 40.0), Vector3(0.0, -0.5, 0.0))
 	_add_box(Vector3(4.0, 2.0, 40.0), Vector3(3.0, -0.8, 0.0))
-
 	_body = _make_character(Vector3(0.0, 0.9, 0.0))
 	for _i: int in 20:
 		await get_tree().physics_frame
@@ -58,13 +80,11 @@ func _run() -> void:
 	_params.margin = 0.001
 	_params.from = _body.global_transform
 	_params.motion = Vector3(0.05, 0.0, 0.0)
-
-	# Warm up, then price one sweep.
 	for _i: int in 2000:
 		PhysicsServer3D.body_test_motion(_body.get_rid(), _params, _result)
 
 	var best: int = 1 << 62
-	for _run_i: int in 7:
+	for _run_i: int in RUNS:
 		var started: int = Time.get_ticks_usec()
 		for _i: int in SWEEP_SAMPLES:
 			PhysicsServer3D.body_test_motion(_body.get_rid(), _params, _result)
@@ -72,10 +92,6 @@ func _run() -> void:
 
 	var per_sweep_us: float = float(best) / SWEEP_SAMPLES
 	print("one body_test_motion = %.3f us" % per_sweep_us)
-	print("  a rejected 4-sweep step check   = %.2f us" % (per_sweep_us * 4.0))
-	print("  allocations saved by the hoist  = 0.66 us  (test/bench_alloc.gd)")
-	print(
-		"  so skipping 3 of 4 sweeps saves %.2f us, or %.1fx the allocation win"
-		% [per_sweep_us * 3.0, per_sweep_us * 3.0 / 0.66]
-	)
+	print("a four sweep step check = %.2f us" % (per_sweep_us * 4.0))
+	print("reusing the query objects saves 0.66 us (test/bench_alloc.gd)")
 	get_tree().quit()

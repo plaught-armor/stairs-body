@@ -248,11 +248,32 @@ func stair_step_up() -> void:
 	motion_transform = motion_transform.translated(_result.get_travel())
 	var step_up_distance = _result.get_travel().length()
 
+	# A ceiling left us no room to rise, so there is no height to step onto and
+	# the last two sweeps would only confirm it. Movement below the collision
+	# margin is not movement - strictly below, because a motion of exactly the
+	# margin is what the collision boundary produces on a legitimate touch.
+	if step_up_distance < _params.margin:
+		return
+
 	# Move forward remaining distance
 	_params.from = motion_transform
 	_params.motion = remainder
 	PhysicsServer3D.body_test_motion(get_rid(), _params, _result)
+	var forward_distance = _result.get_travel().length()
 	motion_transform = motion_transform.translated(_result.get_travel())
+
+	# Raising the body did not get it past the obstacle, so whatever we walked
+	# into is taller than step_height and there is no ledge to come down onto.
+	# This is the character-pressed-against-a-wall case, which is otherwise a
+	# permanent four sweeps a frame to reach the same conclusion.
+	#
+	# Strictly below the margin, not at it: on the frame a walker first touches a
+	# step, the first sweep stops exactly one margin short, so the remainder this
+	# sweep moves is exactly the margin. Bailing there would postpone a real step
+	# by a frame - unnoticeable while walking, but force_stair_step ledge catches
+	# get one frame before gravity carries the character past the ledge.
+	if forward_distance < _params.margin:
+		return
 
 	# And set the collider back down again
 	_params.from = motion_transform
