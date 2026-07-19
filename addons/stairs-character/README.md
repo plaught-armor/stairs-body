@@ -45,7 +45,12 @@ Two things that are not optional:
 Full property, signal and upgrade documentation is in the [repository
 README](https://github.com/plaught-armor/stairs-character).
 
-## License
+## License and provenance
 
-MIT — see `LICENSE` in this directory. Originally by Andrea Jörgensen; the
-attribution travels with the code, so keep that file alongside these scripts.
+MIT — see `LICENSE` in this directory.
+
+This addon is a hard fork of [Andicraft/stairs-character](https://github.com/Andicraft/stairs-character),
+maintained at [plaught-armor/stairs-character](https://github.com/plaught-armor/stairs-character).
+The stepping algorithm is Andrea Jörgensen's original work; the fork rewrote what
+surrounds it. Both copyright lines in `LICENSE` are required — keep that file
+beside these scripts in anything you ship.

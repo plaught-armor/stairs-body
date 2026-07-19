@@ -127,5 +127,16 @@ already there, and in most cases the idea is faster and wrong.
 
 ## Credits
 
-Originally by [Andrea Jörgensen](https://github.com/Andicraft/stairs-character),
-MIT licensed. See LICENSE.
+This is a **hard fork**, maintained by [plaught-armor](https://github.com/plaught-armor/stairs-character).
+It does not track upstream and does not send changes back.
+
+The four-phase stepping algorithm is [Andrea Jörgensen's](https://github.com/Andicraft/stairs-character),
+MIT licensed, and is unchanged in substance — every sweep it runs, it ran there
+first. What the fork adds is around it: bookkeeping moved somewhere a subclass
+cannot switch off, the collider margin read from the shape instead of hardcoded,
+split step signals, reused query objects, static typing throughout, and a headless
+test suite the original did not have.
+
+MIT either way, and Andrea's copyright notice stays in LICENSE — it is a
+condition of the licence, not a courtesy, and it travels with any copy you make
+of this code.
