@@ -307,8 +307,9 @@ func stair_step_up() -> void:
 	_params.motion = step_up
 	PhysicsServer3D.body_test_motion(get_rid(), _params, _result)
 	# GetTravel will be full length if we didn't hit anything
-	motion_transform = motion_transform.translated(_result.get_travel())
-	var step_up_distance: float = _result.get_travel().length()
+	var step_up_travel: Vector3 = _result.get_travel()
+	motion_transform = motion_transform.translated(step_up_travel)
+	var step_up_distance: float = step_up_travel.length()
 
 	# A ceiling left us no room to rise, so there is no height to step onto and
 	# the last two sweeps would only confirm it. Movement below the collision
@@ -321,8 +322,9 @@ func stair_step_up() -> void:
 	_params.from = motion_transform
 	_params.motion = remainder
 	PhysicsServer3D.body_test_motion(get_rid(), _params, _result)
-	var forward_distance: float = _result.get_travel().length()
-	motion_transform = motion_transform.translated(_result.get_travel())
+	var forward_travel: Vector3 = _result.get_travel()
+	var forward_distance: float = forward_travel.length()
+	motion_transform = motion_transform.translated(forward_travel)
 
 	# Raising the body did not get it past the obstacle, so whatever we walked
 	# into is taller than step_height and there is no ledge to come down onto.
