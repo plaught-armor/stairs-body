@@ -63,8 +63,17 @@ const _DEFAULT_MARGIN: float = 0.01
 
 # Use was_grounded instead of is_on_floor() - because of the stair step mechanism, sometimes this
 # script will snap the player to the floor, but is_on_floor() will still read as false.
-# Both are refreshed by move_and_stair_step, so read them *after* that call - before it
-# they still hold last frame's values.
+#
+# Both are refreshed at the top of move_and_stair_step, before it moves anything,
+# so they lag by design: after the call `grounded` holds is_on_floor() as it
+# stood at the *start* of this frame, which is the result of last frame's
+# movement, and `was_grounded` the frame before that. Neither ever reports this
+# frame's post-move state, so don't reach for them to answer "did I just land" -
+# is_on_floor() answers that, with the snapping caveat above.
+#
+# The lag is what the step functions want. stair_step_up runs before this frame's
+# move_and_slide, so start-of-frame ground state is the correct input for it, and
+# stair_step_down keys off the frame before that. Pinned by test case 24.
 var grounded: bool
 var was_grounded: bool
 
@@ -209,7 +218,12 @@ func _resolve_margin() -> void:
 
 
 func stair_step_down() -> void:
-	# Don't step down if we weren't on the ground last physics frame
+	# Don't step down if we weren't on the ground before this frame's movement.
+	# `was_grounded` reaches back two frames rather than one - see the note on the
+	# flags above - so this guard stays open for a frame after a character has
+	# actually left the ground. That costs one extra sweep that finds nothing, and
+	# it errs in the forgiving direction: the frame a walker crosses an edge is
+	# exactly the frame a snap is wanted.
 	if not was_grounded or velocity.y >= 0:
 		return
 

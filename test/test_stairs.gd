@@ -72,6 +72,7 @@ func _run_all() -> void:
 	await _case_21_ceiling_flush_on_the_head()
 	await _case_22_vertical_intent_is_ignored()
 	await _case_23_legacy_step_height_rejects_non_numbers()
+	await _case_24_grounded_tracks_the_previous_frame()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -753,6 +754,61 @@ func _case_23_legacy_step_height_rejects_non_numbers() -> void:
 		(
 			"after_string=%.3f (expected the %.3f default kept), after_int=%.3f (expected 1.0)"
 			% [after_string, default_height, after_int]
+		),
+	)
+	world.queue_free()
+
+
+## `grounded` is documented as the ground state the addon sees, in place of
+## `is_on_floor()`. This pins *which* frame's state that is, because the two are
+## not interchangeable and the difference is invisible until a character crosses
+## an edge.
+##
+## `move_and_stair_step` refreshes both flags at the top, before it moves
+## anything, so after the call `grounded` holds `is_on_floor()` as it stood at
+## the start of this frame - the result of last frame's movement - and never this
+## frame's. `was_grounded` is the frame before that. Measured walking off a
+## ledge: the frame `is_on_floor()` first read false, `grounded` still read true,
+## and it flipped on the following frame.
+##
+## That lag is deliberate rather than incidental. `stair_step_up` runs before
+## this frame's `move_and_slide`, so start-of-frame ground state is the correct
+## input for it, and `stair_step_down` wants the frame before that, which is what
+## `was_grounded` is for.
+func _case_24_grounded_tracks_the_previous_frame() -> void:
+	var world: Node3D = _new_world()
+	# Ground stops at x = 1.0, so the character eventually walks off the end.
+	_add_ground(world, 1.0)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+
+	var lagged_every_frame: bool = true
+	var saw_the_edge: bool = false
+	var previous_floor: bool = c.is_on_floor()
+	for _i: int in 60:
+		await get_tree().physics_frame
+		c.velocity.x = WALK_SPEED
+		c.velocity.y -= GRAVITY * DELTA
+		c.desired_velocity = Vector3(WALK_SPEED, 0.0, 0.0)
+		c.move_and_stair_step()
+
+		if c.grounded != previous_floor:
+			lagged_every_frame = false
+		# The frame the two disagree is the edge crossing, and the reason this
+		# case exists - without it the assertion above passes on a character
+		# that never leaves the ground.
+		if c.grounded != c.is_on_floor():
+			saw_the_edge = true
+		previous_floor = c.is_on_floor()
+
+	_check(
+		"24 grounded holds the previous frame's is_on_floor",
+		lagged_every_frame and saw_the_edge,
+		(
+			"lagged_every_frame=%s saw_the_edge=%s — expected grounded to track the"
+			% [lagged_every_frame, saw_the_edge]
+			+ " previous frame across a ledge the character actually walks off"
 		),
 	)
 	world.queue_free()
