@@ -77,6 +77,7 @@ func _run_all() -> void:
 	await _case_26_embedded_character_is_pushed_out()
 	await _case_27_force_stair_step_catches_a_ledge_airborne()
 	await _case_28_a_step_costs_no_stalled_frame()
+	await _case_29_a_clamped_rise_never_sinks_the_character()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -1011,3 +1012,96 @@ func _case_28_a_step_costs_no_stalled_frame() -> void:
 		),
 	)
 	world.queue_free()
+
+
+## The step check must never leave the character lower than it started. That is
+## guaranteed by phase 2 of stair_step_up: its sweep clamps `step_up_distance` to
+## the rise actually achieved, so phase 4's downward sweep can never travel
+## further than the body rose.
+##
+## Delete that sweep — raise unconditionally and let phase 3's depenetration push
+## the body back out of any ceiling — and the guarantee goes with it. The rise is
+## then always the full step_height while depenetration has already pulled the
+## body back down, so phase 4 drops from a lowered position and can land on
+## ground BELOW where the character started. The last line of stair_step_up then
+## assigns that height and the character sinks.
+##
+## Everything this needs is here and nowhere else in the suite: a low ceiling to
+## force the depenetration, a lip low enough that the forward sweep still finds
+## something, and — the ingredient a ceiling-over-the-step world never has —
+## ground beyond the lip that sits BELOW the character's feet, giving phase 4
+## somewhere lower to land. Found by adversarial search after an 81-row grid
+## comparison of the two variants reported them identical.
+func _case_29_a_clamped_rise_never_sinks_the_character() -> void:
+	var world: Node3D = _new_world()
+	# Ground the character stands on, top face at y = 0, ending at x = 2.6.
+	_add_box(world, Vector3(15.6, 1.0, 8.0), Vector3(-5.2, -0.5, 0.0))
+	# A 2 cm lip on its edge — tall enough for the forward sweep to catch.
+	_add_box(world, Vector3(0.1, 0.02, 8.0), Vector3(2.65, 0.01, 0.0))
+	# Ground beyond the lip, 10 cm BELOW the character's feet.
+	_add_box(world, Vector3(20.0, 1.0, 8.0), Vector3(12.7, -0.6, 0.0))
+	# Ceiling 5 cm above the head, so a full step_height rise cannot happen.
+	_add_box(
+		world,
+		Vector3(30.0, 1.0, 8.0),
+		Vector3(2.0, REST_Y + BODY_HEIGHT * 0.5 + 0.05 + 0.5, 0.0),
+	)
+
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 2.0)
+	c.step_height = 0.3
+
+	await _simulate(c, Vector3.ZERO, 2)
+	var start_y: float = c.global_position.y
+
+	# Sampled inside the signal handler, which is the only place the sink is
+	# visible: stair_step_up writes global_position.y, then move_and_slide's own
+	# recovery shoves the body back out of the ground before the frame ends. A
+	# resting-height check at the end of the frame sees nothing wrong.
+	var lowest: PackedFloat64Array = [INF]
+	var ups: PackedInt32Array = [0]
+	c \
+			.stepped_up \
+			.connect(
+		func() -> void:
+			lowest[0] = minf(lowest[0], c.global_position.y)
+			ups[0] += 1
+	)
+
+	for _i: int in 40:
+		await get_tree().physics_frame
+		c.velocity.x = 60.0
+		c.velocity.y -= GRAVITY * DELTA
+		c.desired_velocity = Vector3(60.0, 0.0, 0.0)
+		c.move_and_stair_step()
+
+	var sank: bool = lowest[0] < start_y - EPS
+	world.queue_free()
+
+	# Shipping takes no step at all here - phase 2 clamps the rise to the 5 cm of
+	# headroom, so phase 4's matching 5 cm drop cannot reach the ground beyond the
+	# lip and the check returns before emitting. That means the sink assertion
+	# above passes VACUOUSLY on correct code, and a future change that stopped
+	# stepping in this geometry for some unrelated reason would pass it in silence.
+	#
+	# So a control runs the same instrumentation against a plain climbable step.
+	# It fires, which is what makes a zero count in the scenario above mean "no
+	# step was taken" rather than "the handler never worked".
+	var control_world: Node3D = _new_world()
+	_add_ground(control_world, 1.0)
+	_add_step(control_world, 0.2)
+	var control: StairsCharacter = _add_character(control_world, StairsCharacter, 0.0)
+	var control_counts: Dictionary = _count_signals(control)
+	await _simulate(control, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(control, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+
+	_check(
+		"29 a clamped rise never sinks the character",
+		not sank and control_counts["up"] >= 1,
+		(
+			"sink: y=%.4f is %.3f below the start of %.4f after %d step-ups; "
+			% [lowest[0], start_y - lowest[0], start_y, ups[0]]
+			+ "control took %d step-ups (expected >=1, else the harness sees nothing)"
+			% control_counts["up"]
+		),
+	)
+	control_world.queue_free()
