@@ -13,3 +13,6 @@ export_presets.cfg
 .mono/
 data_*/
 mono_crash.*.json
+
+# Agent worktrees created by background workflows
+.claude/worktrees/

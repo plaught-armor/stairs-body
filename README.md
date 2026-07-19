@@ -38,6 +38,27 @@ reads the margin off the shape you assign and warns if it is above 0.01.
 | `force_stair_step` | Runs the step check even when not grounded, for cases like a wall jump that should have caught a ledge but snagged just below it. Cleared for you after each call. |
 | `grounded` / `was_grounded` | Ground state as the addon sees it, which is not always `is_on_floor()` - the step logic sometimes moves the body in ways that leave `is_on_floor()` reading false. Both are refreshed at the top of `move_and_stair_step()`, before it moves anything, so `grounded` is the state as of the *start* of the current frame and `was_grounded` the frame before. Neither reports this frame's post-move state; use `is_on_floor()` for that. |
 
+### Why `step_height` defaults to 0.33
+
+The number is a compromise between two traditions, and the ratio is what
+travels — scale it with your character, because the absolute value does not.
+
+| Source | Step height | Character height | Ratio |
+|---|---|---|---|
+| [Quake](https://book.leveldesignbook.com/process/blockout/metrics/quake) / [Source](https://www.worldofleveldesign.com/categories/sourcesdk-authoringtools/hammer-source-player-scale-world-dimensions.php) (`sv_stepsize`) | 18 u | 72 u | 0.25 |
+| [Unreal](https://dev.epicgames.com/documentation/unreal-engine/API/Runtime/Engine/UCharacterMovementComponent) `MaxStepHeight` | 45 cm | 176 cm | 0.256 |
+| [Unity](https://docs.unity3d.com/Manual/class-CharacterController.html) `stepOffset` | recommends 0.1–0.4 | "2 meter sized human" | 0.05–0.20 |
+| [IRC R311.7.5.1](https://codes.iccsafe.org/s/IRC2015/chapter-3-building-planning/IRC2015-Pt03-Ch03-SecR311.7.5) (real stairs) | 19.7 cm max riser | ~180 cm | 0.11 |
+
+The FPS lineage converges on ~0.25 — deliberately generous, so characters walk
+up crates and rubble rather than only stairs. Unity and actual building code sit
+near 0.11–0.15, stairs only.
+
+On Godot's usual 2 m capsule, `0.33` clears a code-maximum real stair (0.197)
+with margin, lands inside Unity's recommended band, and stays under the 0.25
+ratio at which a character starts silently climbing crates and low walls — a
+surprising default for a library called *stairs*-character.
+
 ## Signals
 
 | Signal | Emitted |
