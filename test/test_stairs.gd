@@ -73,6 +73,10 @@ func _run_all() -> void:
 	await _case_22_vertical_intent_is_ignored()
 	await _case_23_legacy_step_height_rejects_non_numbers()
 	await _case_24_grounded_tracks_the_previous_frame()
+	await _case_25_second_collision_shape_blocks_the_step()
+	await _case_26_embedded_character_is_pushed_out()
+	await _case_27_force_stair_step_catches_a_ledge_airborne()
+	await _case_28_a_step_costs_no_stalled_frame()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -459,7 +463,11 @@ func _case_13_step_down_bounded_by_step_height() -> void:
 	c.step_height = 0.05
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
-	var airborne: int = await _simulate_counting_airborne(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+	var airborne: int = await _simulate_counting_airborne(
+		c,
+		Vector3(WALK_SPEED, 0.0, 0.0),
+		WALK_FRAMES,
+	)
 
 	# `> 0` is a binary signal here, not a thin threshold: measured on this setup,
 	# the snapping case reports exactly 0 airborne frames, because the snap keeps
@@ -527,10 +535,13 @@ func _resolved_margin(c: StairsCharacter) -> float:
 
 
 func _count_signals(c: StairsCharacter) -> Dictionary:
-	var counts: Dictionary = {"any": 0, "up": 0, "down": 0}
-	c.stepped.connect(func() -> void: counts["any"] += 1)
-	c.stepped_up.connect(func() -> void: counts["up"] += 1)
-	c.stepped_down.connect(func() -> void: counts["down"] += 1)
+	var counts: Dictionary = { "any": 0, "up": 0, "down": 0 }
+	c.stepped.connect(func() -> void:
+				counts["any"] += 1)
+	c.stepped_up.connect(func() -> void:
+				counts["up"] += 1)
+	c.stepped_down.connect(func() -> void:
+				counts["down"] += 1)
 	return counts
 
 
@@ -548,7 +559,8 @@ func _case_16_step_up_signals() -> void:
 	_check(
 		"16 stepping up emits stepped_up and stepped",
 		counts["up"] >= 1 and counts["any"] == counts["up"] + counts["down"],
-		"up=%d down=%d any=%d expected up>=1 and any==up+down" % [counts["up"], counts["down"], counts["any"]],
+		"up=%d down=%d any=%d expected up>=1 and any==up+down"
+		% [counts["up"], counts["down"], counts["any"]],
 	)
 	world.queue_free()
 
@@ -587,7 +599,8 @@ func _case_18_step_down_signals() -> void:
 	_check(
 		"18 snapping down emits stepped_down and stepped",
 		counts["down"] >= 1 and counts["any"] == counts["up"] + counts["down"],
-		"up=%d down=%d any=%d expected down>=1 and any==up+down" % [counts["up"], counts["down"], counts["any"]],
+		"up=%d down=%d any=%d expected down>=1 and any==up+down"
+		% [counts["up"], counts["down"], counts["any"]],
 	)
 	world.queue_free()
 
@@ -713,10 +726,7 @@ func _case_22_vertical_intent_is_ignored() -> void:
 	_check(
 		"22 a vertical component in desired_velocity does not change the step",
 		rises[0] > 0.1 and rises[1] > 0.1 and absf(rises[2]) < EPS,
-		(
-			"rises=%s expected the two forward intents to step and the vertical one not to"
-			% [rises]
-		),
+		("rises=%s expected the two forward intents to step and the vertical one not to" % [rises]),
 	)
 
 
@@ -809,6 +819,195 @@ func _case_24_grounded_tracks_the_previous_frame() -> void:
 			"lagged_every_frame=%s saw_the_edge=%s — expected grounded to track the"
 			% [lagged_every_frame, saw_the_edge]
 			+ " previous frame across a ledge the character actually walks off"
+		),
+	)
+	world.queue_free()
+
+
+## The step check must see every collision shape the body owns, not just the one
+## `collider` points at. `collider` exists to resolve a margin and to warn about
+## shape choice; it was never meant to narrow what gets swept. A character with a
+## backpack, a helmet, or any second shape sticking out past the cylinder has to
+## be blocked by whatever that shape hits.
+##
+## The ceiling here clears the cylinder by a wide margin and clears the upper
+## shape by 0.15, less than the 0.2 step, so a sweep that only knows about
+## `collider` sees an open path and takes a step the whole body cannot fit
+## through. Mirrors case 03, which does the same thing with a single shape.
+##
+## What this pins is the outcome - the body does not rise - and not which sweep
+## produces it. That distinction cost something to learn: a variant that moved
+## the raise sweep onto a single-shape shape cast still passed this case, via the
+## final down sweep rejecting the landing rather than the raise sweep ever seeing
+## the upper shape. So if you are changing which primitive a sweep uses, this
+## case passing is not on its own evidence that multi-shape bodies still work -
+## test/diag_multishape.gd asks the two primitives directly, and they disagree by
+## 0.18 on exactly this geometry.
+func _case_25_second_collision_shape_blocks_the_step() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, 0.2)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+
+	# A second shape sitting on top of the head, from y = 1.8 to y = 2.3.
+	var extra: CollisionShape3D = CollisionShape3D.new()
+	extra.name = "Backpack"
+	var box: BoxShape3D = BoxShape3D.new()
+	box.size = Vector3(0.4, 0.5, 0.4)
+	extra.shape = box
+	c.add_child(extra)
+	extra.position = Vector3(0.0, BODY_HEIGHT * 0.5 + 0.25, 0.0)
+
+	# Ceiling underside at y = 2.45, leaving the upper shape 0.15 of headroom.
+	_add_box(world, Vector3(4.0, 1.0, 8.0), Vector3(2.0, 2.95, 0.0))
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	var peak: float = await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+
+	_check(
+		"25 a second collision shape blocks the step",
+		peak < REST_Y + EPS,
+		"peak=%.3f expected no rise - the upper shape has only 0.15 of headroom" % peak,
+	)
+	world.queue_free()
+
+
+## A character that starts overlapping the step has to end up on top of it. The
+## sweeps are what resolve this: they depenetrate the body before measuring, so
+## an embedded start is pushed out rather than measured from. A sweep that
+## instead ignores whatever it is already inside of reads an open path through
+## the step and leaves the character where it started.
+func _case_26_embedded_character_is_pushed_out() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, 0.2)
+	# The step face is at x = 1.0 and its top at y = 0.2. Start the body past
+	# the face with its feet below the top, so the lowest 0.2 of the cylinder
+	# begins inside the step.
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 1.2)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+
+	var on_step: bool = absf(c.global_position.y - (REST_Y + 0.2)) < EPS
+	_check(
+		"26 an embedded character is pushed out onto the step",
+		on_step,
+		"pos=%v expected y~%.2f, not left inside the step" % [c.global_position, REST_Y + 0.2],
+	)
+	world.queue_free()
+
+
+## What force_stair_step is actually for, which case 09 does not cover - it only
+## checks the flag is cleared. An airborne character moving into a ledge whose
+## top is within reach should be lifted onto it, and the same character without
+## the flag should not be: stair_step_up returns on the grounded check.
+##
+## This is the case that guards any future attempt to skip the step check on
+## cheap evidence. An airborne character has no floor contact and no slide
+## collisions to read, so a pre-filter built on either would skip precisely the
+## check this flag exists to force, and case 09 would still pass.
+func _case_27_force_stair_step_catches_a_ledge_airborne() -> void:
+	var world: Node3D = _new_world()
+	# A ledge whose top face is at y = 0.3, and NO ground in front of it. The
+	# first attempt at this case put ground under the character: it landed after
+	# two frames and then climbed the ledge the ordinary grounded way, so the
+	# control reached the top as well and the case proved nothing. The pit is
+	# what keeps the control airborne for the whole run.
+	_add_step(world, 0.3)
+
+	# Airborne over the pit, feet at y = 0.15 - nothing underneath, and 0.15
+	# below the ledge top, so the ledge is within step_height but the body is not
+	# standing on anything. This is the wall-jump snag the flag was written for.
+	var caught: StairsCharacter = _add_character(world, StairsCharacter, 0.5)
+	caught.global_position.y = REST_Y + 0.15
+	var dropped: StairsCharacter = _add_character(world, StairsCharacter, 0.5)
+	dropped.global_position.z = 3.0
+	dropped.global_position.y = REST_Y + 0.15
+
+	for _i: int in 12:
+		await get_tree().physics_frame
+		for c: StairsCharacter in [caught, dropped]:
+			c.velocity.x = WALK_SPEED
+			c.velocity.y -= GRAVITY * DELTA
+			c.desired_velocity = Vector3(WALK_SPEED, 0.0, 0.0)
+		caught.force_stair_step = true
+		caught.move_and_stair_step()
+		dropped.move_and_stair_step()
+
+	var on_ledge: bool = caught.global_position.y > REST_Y + 0.3 - EPS
+	var control_below: bool = dropped.global_position.y < REST_Y + 0.3 - EPS
+	_check(
+		"27 force_stair_step catches a ledge while airborne",
+		on_ledge and control_below,
+		(
+			"forced y=%.3f (expected >%.3f), control y=%.3f (expected <%.3f)"
+			% [
+				caught.global_position.y,
+				REST_Y + 0.3 - EPS,
+				dropped.global_position.y,
+				REST_Y + 0.3 - EPS,
+			]
+		),
+	)
+	world.queue_free()
+
+
+## A step must cost no frame of forward progress. The step check runs before
+## move_and_slide and raises the body first, so on the frame a walker reaches a
+## climbable step it both rises and keeps moving - it never stands still against
+## the face for a frame.
+##
+## This is the coarse latency guard. Anything that defers the check by a frame -
+## reading last frame's collisions rather than sweeping now, rechecking a cached
+## answer every N frames - can show up here as a frame where the character is
+## against the step, has not yet stepped, and goes nowhere. The height assertions
+## in the other cases cannot see that: the character still ends up on top, one
+## frame later.
+##
+## Its limit is worth knowing before trusting it. The threshold below tolerates a
+## partial frame of lost progress, and a deferred check that costs less than that
+## passes here: the is_on_wall pre-filter measured in test/diag_latency.gd clears
+## this case and still climbs a flight of eight steps in 90 frames against 83.
+## For a frame-count answer, run that file - this one only catches a full stall.
+func _case_28_a_step_costs_no_stalled_frame() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, 0.2)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var counts: Dictionary = _count_signals(c)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+
+	# Per frame the walker should cover WALK_SPEED * DELTA. Half of that is the
+	# threshold for "stalled" - generous enough that solver jitter and the margin
+	# the first contact frame gives up cannot trip it.
+	var expected_advance: float = WALK_SPEED * DELTA
+	var stalls: int = 0
+	var worst_frame: int = -1
+	for i: int in WALK_FRAMES:
+		await get_tree().physics_frame
+		var before_x: float = c.global_position.x
+		var stepped_before: int = counts["up"]
+		c.velocity.x = WALK_SPEED
+		c.velocity.y -= GRAVITY * DELTA
+		c.desired_velocity = Vector3(WALK_SPEED, 0.0, 0.0)
+		c.move_and_stair_step()
+
+		# Only frames before the character is up on the step can stall against it.
+		if counts["up"] > 0 and stepped_before > 0:
+			continue
+		if c.global_position.x - before_x < expected_advance * 0.5:
+			stalls += 1
+			if worst_frame < 0:
+				worst_frame = i
+
+	_check(
+		"28 climbing a step costs no stalled frame",
+		stalls == 0 and counts["up"] >= 1,
+		(
+			"%d stalled frames (first at %d), stepped_up fired %d times"
+			% [stalls, worst_frame, counts["up"]]
 		),
 	)
 	world.queue_free()
