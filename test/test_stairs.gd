@@ -78,6 +78,7 @@ func _run_all() -> void:
 	await _case_27_force_stair_step_catches_a_ledge_airborne()
 	await _case_28_a_step_costs_no_stalled_frame()
 	await _case_29_a_clamped_rise_never_sinks_the_character()
+	await _case_30_snap_down_reach_is_exactly_step_height()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -1105,3 +1106,43 @@ func _case_29_a_clamped_rise_never_sinks_the_character() -> void:
 		),
 	)
 	control_world.queue_free()
+
+
+## Case 13 covers the same property and does not catch a snap-down that reaches
+## too far, because it drops 0.20 against a step_height of 0.05 — four times the
+## reach. Tripling the sweep still falls short, so the case passes. Found by
+## mutation audit: multiplying the snap distance by three survived the whole
+## suite.
+##
+## This one puts the drop INSIDE the range a loosened sweep would reach: 0.12
+## against the same 0.05 step_height, so the character goes briefly airborne and
+## a sweep reaching 3x would plant it.
+##
+## The real threshold here is not step_height. CharacterBody3D snaps to the floor
+## on its own within floor_snap_length, which defaults to 0.10, so every drop
+## below ~0.11 reports zero airborne frames whatever this addon does. That is what
+## sets the floor of the useful range, and it means this case catches snap
+## multipliers of roughly 2.4x and up rather than anything above 1x. Enough for
+## the tripling it was written for, and worth knowing before tightening it: the
+## margin between 0.12 and that 0.11 cliff is about a centimetre, and the cliff
+## moves if floor_snap_length is ever set or its default changes.
+func _case_30_snap_down_reach_is_exactly_step_height() -> void:
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
+	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.62, 0.0))
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	c.step_height = 0.05
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	var airborne: int = await _simulate_counting_airborne(
+		c,
+		Vector3(WALK_SPEED, 0.0, 0.0),
+		WALK_FRAMES,
+	)
+
+	_check(
+		"30 snap-down reach is exactly step_height",
+		airborne > 0,
+		"airborne_frames=%d expected >0 (a 0.12 drop must not snap at 0.05)" % airborne,
+	)
+	world.queue_free()

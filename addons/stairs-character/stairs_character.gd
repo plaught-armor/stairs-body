@@ -73,7 +73,15 @@ const _DEFAULT_MARGIN: float = 0.01
 #
 # The lag is what the step functions want. stair_step_up runs before this frame's
 # move_and_slide, so start-of-frame ground state is the correct input for it, and
-# stair_step_down keys off the frame before that. Pinned by test case 24.
+# stair_step_down keys off the frame before that.
+#
+# Case 24 pins `grounded` - that it reports the previous frame's is_on_floor
+# rather than this one's. It does NOT pin stair_step_down's use of `was_grounded`
+# over `grounded`: a mutation audit swapped that and the whole suite still
+# passed. That is expected rather than a hole, for the reason set out on the
+# guard itself, which measured the two as producing identical outcomes and keeps
+# `was_grounded` for the cases it cannot easily stage. Read that note before
+# changing it - the choice is deliberate and deliberately untested.
 var grounded: bool
 var was_grounded: bool
 
@@ -315,6 +323,17 @@ func stair_step_up() -> void:
 	# the last two sweeps would only confirm it. Movement below the collision
 	# margin is not movement - strictly below, because a motion of exactly the
 	# margin is what the collision boundary produces on a legitimate touch.
+	#
+	# Mostly an optimisation. Deleting it changes no POSITIONAL outcome anywhere in
+	# the 81-row ceiling grid (test/diag_phase2.gd): with the rise clamped to
+	# nothing the forward sweep below is blocked from the same place and bails on
+	# its own, so what the bail saves is the two sweeps it takes to get there.
+	#
+	# Not purely an optimisation, though, and the difference is signals rather than
+	# position. In a narrow window - clearance around 1.5x the margin, at speed -
+	# removing it lets the check run to the end and emit stepped_up on a frame that
+	# moves the body nowhere. So a mutation audit finding its removal "survives" is
+	# a statement about the cases that exist, not proof that none could be written.
 	if step_up_distance < _params.margin:
 		return
 
@@ -350,6 +369,19 @@ func stair_step_up() -> void:
 
 	motion_transform = motion_transform.translated(_result.get_travel())
 
+	# Defensive, and deliberately untested. A mutation audit deleted this check and
+	# the whole suite passed, so a case was attempted - and the geometry needed to
+	# reach it turned out to be a knife edge. Searching 192 shapes
+	# (test/diag_steep_landing.gd) found 188 that reach this line at all and only 4
+	# whose landing face is steeper than floor_max_angle, and in those, moving the
+	# obstacle 5 mm flips the outcome. A test pinned on that would fail on drift
+	# rather than on regressions.
+	#
+	# The reason it is so hard to reach: to land on a steep face the body must
+	# first get FORWARD past something, and anything steep enough to matter is
+	# usually also tall enough to stop the forward sweep, which bails above. Keep
+	# the check - it costs one comparison and the alternative is standing on a
+	# wall - but do not read the missing test as an oversight.
 	var surface_normal: Vector3 = _result.get_collision_normal(0)
 	if surface_normal.angle_to(Vector3.UP) > floor_max_angle:
 		return #Can't stand on the thing we're trying to step on anyway
