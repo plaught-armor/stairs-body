@@ -1,3 +1,4 @@
+@icon("res://addons/stairs-character/stairs_character.svg")
 extends CharacterBody3D
 class_name StairsCharacter
 

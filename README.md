@@ -4,6 +4,16 @@ A simple to use class that enables your CharacterBody3D to handle stairs properl
 
 Mainly tested with the Jolt physics engine and cylinder colliders, not guaranteed to work well with anything else - but try it!
 
+## Install
+
+Copy `addons/stairs-character/` into your project. That is the whole install.
+`StairsCharacter` registers itself because the script carries a `class_name`, so
+it is available whether or not the plugin is enabled in **Project Settings >
+Plugins** — enabling it only lists the addon there with its version and author.
+
+The `LICENSE` inside that folder is not decoration: this is MIT-derived work and
+the attribution has to travel with the code, so keep it beside the scripts.
+
 ## Usage instructions:
 
 1. Make your character controller extend `StairsCharacter` instead of `CharacterBody3D`.
@@ -93,10 +103,27 @@ to get the behaviour it advertised.
 
     test/run.sh
 
-Runs a headless suite that builds each world procedurally and exits with the
-number of failures. `test/bench_alloc.gd` and `test/bench_sweep.gd` are the
-benchmarks behind the performance choices in the addon, and their comments record
-what was measured.
+Runs a headless suite of 30 cases that builds each world procedurally and exits
+with the number of failures. Nothing in `test/` ships with the addon; it is all
+development material for this repository.
+
+Alongside it are the benchmarks and diagnostics behind the addon's performance
+and correctness choices. Each one records its measured numbers in its header, so
+the reasoning survives without rerunning anything:
+
+| File | Question it answers |
+|---|---|
+| `bench_sweep.gd`, `bench_alloc.gd` | What a sweep costs, and how many each situation runs |
+| `bench_frame.gd`, `diag_state.gd` | The honest per-character-per-frame cost, driving real frames — and what state those characters are actually in |
+| `bench_micro.gd` | The work *around* the sweeps — and why none of it is worth rewriting |
+| `bench_primitive.gd`, `diag_castmotion.gd`, `diag_multishape.gd` | Whether a cheaper sweep primitive could replace `body_test_motion` (it cannot) |
+| `bench_ramp.gd` | What the walkable-surface bail is worth |
+| `diag_reuse.gd`, `diag_slide.gd`, `diag_latency.gd` | Whether the check can be cached or deferred (it cannot, without costing stairs) |
+| `diag_phase2.gd`, `diag_sink_robustness.gd`, `diag_steep_landing.gd` | Whether the four-phase algorithm can lose a phase (it cannot) |
+
+Several of these exist to record a **negative** result. If you are about to try
+one of these optimisations, read the relevant header first — the measurement is
+already there, and in most cases the idea is faster and wrong.
 
 ## Credits
 

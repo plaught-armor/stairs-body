@@ -13,3 +13,7 @@ config_version=5
 config/name="stairs-character-tests"
 run/main_scene="res://test/test_stairs.tscn"
 config/features=PackedStringArray("4.8", "Forward Plus")
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/stairs-character/plugin.cfg")
