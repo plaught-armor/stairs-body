@@ -47,6 +47,8 @@ reads the margin off the shape you assign and warns if it is above 0.01.
 | `desired_velocity` | Where the controller *wants* to go this frame. Only used when actual horizontal velocity is zero, which is what makes stepping up from a standstill work. Any vertical component is ignored, so handing over a whole movement vector with gravity already in it is fine. Cleared for you after each call. |
 | `force_stair_step` | Runs the step check even when not grounded, for cases like a wall jump that should have caught a ledge but snagged just below it. Cleared for you after each call. |
 | `grounded` / `was_grounded` | Ground state as the addon sees it, which is not always `is_on_floor()` - the step logic sometimes moves the body in ways that leave `is_on_floor()` reading false. Both are refreshed at the top of `move_and_stair_step()`, before it moves anything, so `grounded` is the state as of the *start* of the current frame and `was_grounded` the frame before. Neither reports this frame's post-move state; use `is_on_floor()` for that. |
+| `smooth_node` | A visual child - a camera or mesh pivot - whose local Y the addon eases after each step, so the view does not pop the instant the body snaps. Leave it unassigned for the original hard snap. See [Step smoothing](#step-smoothing) below. |
+| `step_smoothing` | How fast the view catches up to the snapped body, as an exponential decay rate: higher is snappier. Time constant is `1 / step_smoothing` seconds; the default `20` settles in about 150 ms. `0` turns smoothing off while keeping `smooth_node` assigned. Only used when `smooth_node` is set. |
 
 ### Why `step_height` defaults to 0.33
 
@@ -68,6 +70,37 @@ On Godot's usual 2 m capsule, `0.33` clears a code-maximum real stair (0.197)
 with margin, lands inside Unity's recommended band, and stays under the 0.25
 ratio at which a character starts silently climbing crates and low walls — a
 surprising default for a library called *stairs*-character.
+
+## Step smoothing
+
+A step moves the body in a single frame, which reads as a pop on the camera. The
+addon can hide that by easing the *visual* into place while the body still snaps
+instantly - the snap is what keeps the physics correct, so it is never smoothed.
+
+The body is the collision shape. Ease the body itself and, mid-ease, the collider
+sits inside the step: `move_and_slide` depenetrates it, `is_on_floor()` reads
+false, and the step check re-fires the next frame. So the body has to be at the
+stepped height the moment the step resolves. What eases is a **child** - your
+camera or mesh - which the addon pushes the opposite way for one frame and then
+decays back, so the view holds still and then glides to meet the body.
+
+Rig it as `body -> smooth_node -> camera`:
+
+```
+Player            (extends StairsCharacter)
+└── SmoothPivot   (Node3D, assigned to smooth_node)
+    └── Camera3D   (your camera; head bob, recoil, etc. live here)
+```
+
+Assign the pivot to `smooth_node` and set `step_smoothing` to taste. The addon
+owns the pivot's local Y, so keep camera bob or recoil on a child of it - a write
+to the pivot's own Y is overwritten every frame by the decay.
+
+`step_smoothing` is an exponential decay rate: `1 / step_smoothing` is the time
+constant, so `20` settles in ~150 ms (a Source-like feel), `8-10` floats, past
+`30` is almost the raw snap. It is framerate independent, so a value feels the
+same at 60 and 144 Hz. Set it to `0`, or leave `smooth_node` unassigned, and the
+body snaps exactly as it did before - which is what every existing scene gets.
 
 ## Signals
 
@@ -103,7 +136,7 @@ to get the behaviour it advertised.
 
     test/run.sh
 
-Runs a headless suite of 30 cases that builds each world procedurally and exits
+Runs a headless suite of 36 cases that builds each world procedurally and exits
 with the number of failures. Nothing in `test/` ships with the addon; it is all
 development material for this repository.
 
@@ -134,8 +167,8 @@ The four-phase stepping algorithm is [Andrea Jörgensen's](https://github.com/An
 MIT licensed, and is unchanged in substance — every sweep it runs, it ran there
 first. What the fork adds is around it: bookkeeping moved somewhere a subclass
 cannot switch off, the collider margin read from the shape instead of hardcoded,
-split step signals, reused query objects, static typing throughout, and a headless
-test suite the original did not have.
+split step signals, optional visual step smoothing, reused query objects, static
+typing throughout, and a headless test suite the original did not have.
 
 MIT either way, and Andrea's copyright notice stays in LICENSE — it is a
 condition of the licence, not a courtesy, and it travels with any copy you make

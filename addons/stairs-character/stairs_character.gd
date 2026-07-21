@@ -32,6 +32,32 @@ signal stepped_down
 ## steep contact normal, which the floor_max_angle check then rejects.
 @export var collider: CollisionShape3D
 
+@export_category("Step Smoothing")
+## The visual node whose local Y the addon eases after a step, so the camera or
+## mesh does not pop the instant the body snaps up or down. Leave it unassigned
+## and smoothing is off - the body still snaps exactly as before, which is the
+## behaviour every existing scene already has.
+##
+## This must NOT be the character body itself. The body is the collider, and it
+## has to sit at the stepped height the moment the step resolves or move_and_slide
+## depenetrates it, is_on_floor reads false, and the step check re-fires next
+## frame. Only a *child* can be moved freely, so point this at a dedicated pivot
+## between the body and the camera - body -> smooth_node -> camera. The addon owns
+## this node's local Y; anything else that writes to it (camera bob, recoil) must
+## live on a child of it, or each frame's decay write will wipe that motion.
+@export var smooth_node: Node3D
+
+## How fast the visual catches up to the snapped body, as an exponential decay
+## rate: higher is snappier. The time constant is 1 / step_smoothing seconds, so
+## the default 20 settles in about 150 ms - roughly the Source engine feel. Drop
+## toward 8-10 for a floatier rise, push past 30 for an almost-instant one.
+##
+## Zero turns smoothing off without unassigning smooth_node: the offset is forced
+## to zero every frame, so the visual tracks the body rigidly. The decay is
+## framerate independent (exp(-rate * dt)), so the same value feels the same at 60
+## and 144 Hz.
+@export_range(0.0, 60.0, 0.5) var step_smoothing: float = 20.0
+
 # Private variables
 
 # Scratch for the motion tests, held rather than allocated per call (P20).
@@ -59,6 +85,18 @@ const _HORIZONTAL: Vector3 = Vector3(1, 0, 1)
 # Fallback for a character with no usable collider, and the threshold past which
 # a margin is worth warning about.
 const _DEFAULT_MARGIN: float = 0.01
+
+# Below this the residual offset is close enough to home to snap and stop, rather
+# than chase an exponential tail that never quite reaches zero.
+const _SMOOTH_EPSILON: float = 0.0001
+
+# The visual offset the decay chases back to zero, and the rest local Y it decays
+# toward. On a step the body snaps and this is bumped the opposite way, so the
+# child stays put in world space for one frame and then eases home. Rest is
+# captured at NOTIFICATION_READY so a smooth_node authored at a non-zero local Y
+# still settles where it was placed rather than at zero.
+var _smooth_offset_y: float = 0.0
+var _smooth_rest_y: float = 0.0
 
 # Public variables
 
@@ -133,6 +171,15 @@ func move_and_stair_step() -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_READY:
 		_resolve_margin()
+		_init_step_smoothing()
+	# NOTIFICATION_PROCESS is dispatched to _notification on every script in the
+	# chain, so a subclass defining its own _process cannot switch this off the way
+	# it could shadow a _process method - the same reason margin resolution hangs
+	# off NOTIFICATION_READY above. get_process_delta_time is the render-frame dt,
+	# which is what visual smoothing wants: it runs once per drawn frame, not once
+	# per physics tick.
+	elif what == NOTIFICATION_PROCESS:
+		_tick_step_smoothing(get_process_delta_time())
 
 
 # Compatibility shim for scenes authored against the old `_step_height` name.
@@ -226,6 +273,64 @@ func _resolve_margin() -> void:
 		)
 
 
+# Runs at NOTIFICATION_READY, which re-fires after request_ready() - so this
+# resets the offset rather than leaving a mid-decay value to be re-applied against
+# a freshly captured rest, which would pop the visual for one frame.
+#
+# Idle processing is only ever turned ON here, never off. A subclass that defines
+# its own _process has idle processing auto-enabled by the engine, and toggling it
+# off from this base handler - which runs after the subclass is set up - would
+# silently kill that _process, the same shadowing trap NOTIFICATION_READY exists
+# to avoid. When smooth_node is null we leave processing untouched; _tick_step_smoothing
+# returns immediately in that case, so the per-frame cost is one branch at most.
+func _init_step_smoothing() -> void:
+	_smooth_offset_y = 0.0
+	if smooth_node == null:
+		return
+	_smooth_rest_y = smooth_node.position.y
+	set_process(true)
+
+
+# Called from the two apply sites with the signed height the body just moved:
+# positive up, negative down. The visual is pushed the opposite way, so it holds
+# its world position for a frame before the decay pulls it home.
+func _accumulate_step_smoothing(step_delta_y: float) -> void:
+	if smooth_node == null or step_smoothing <= 0.0:
+		return
+
+	# Only ease genuine steps. A jump larger than a full step in either direction
+	# is a teleport, a respawn, or an external shove - easing that would drag the
+	# camera across the whole distance. step_height is the most the body can move
+	# in one legitimate step up; a snap down can add floor_snap_length on top, so
+	# the gate is generous at twice step_height rather than exactly it.
+	if absf(step_delta_y) > step_height * 2.0:
+		return
+
+	# Clamped to one step_height so a burst of steps in quick succession cannot
+	# stack the offset into a visible lurch larger than a single step.
+	_smooth_offset_y = clampf(_smooth_offset_y - step_delta_y, -step_height, step_height)
+
+
+# Render-frame decay of the visual offset back to the rest position. Framerate
+# independent: exp(-rate * dt) closes the same fraction of the remaining distance
+# per second whatever the frame rate, unlike a fixed-fraction lerp.
+func _tick_step_smoothing(delta: float) -> void:
+	if smooth_node == null:
+		return
+
+	# step_smoothing of zero means "off": collapse the offset immediately so the
+	# visual tracks the body rigidly, rather than freezing at whatever offset an
+	# earlier non-zero setting left behind.
+	if step_smoothing <= 0.0:
+		_smooth_offset_y = 0.0
+	else:
+		_smooth_offset_y *= exp(-step_smoothing * delta)
+		if absf(_smooth_offset_y) < _SMOOTH_EPSILON:
+			_smooth_offset_y = 0.0
+
+	smooth_node.position.y = _smooth_rest_y + _smooth_offset_y
+
+
 func stair_step_down() -> void:
 	# Don't step down if we weren't on the ground before this frame's movement.
 	# `was_grounded` reaches back two frames rather than one - see the note on the
@@ -254,8 +359,12 @@ func stair_step_down() -> void:
 	if not PhysicsServer3D.body_test_motion(get_rid(), _params, _result):
 		return
 
+	# Measured across the whole downward move - the snap travel plus whatever
+	# apply_floor_snap adds - so the visual eases the full drop the eye sees.
+	var pre_step_y: float = global_position.y
 	global_transform = global_transform.translated(_result.get_travel())
 	apply_floor_snap()
+	_accumulate_step_smoothing(global_position.y - pre_step_y)
 
 	stepped_down.emit()
 	stepped.emit()
@@ -388,7 +497,9 @@ func stair_step_up() -> void:
 		return #Can't stand on the thing we're trying to step on anyway
 
 	# Move player to match the step height we just found
+	var pre_step_y: float = global_position.y
 	global_position.y = motion_transform.origin.y
+	_accumulate_step_smoothing(global_position.y - pre_step_y)
 
 	stepped_up.emit()
 	stepped.emit()

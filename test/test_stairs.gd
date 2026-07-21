@@ -79,6 +79,12 @@ func _run_all() -> void:
 	await _case_28_a_step_costs_no_stalled_frame()
 	await _case_29_a_clamped_rise_never_sinks_the_character()
 	await _case_30_snap_down_reach_is_exactly_step_height()
+	await _case_31_step_up_eases_the_visual_down_then_home()
+	await _case_32_step_down_eases_the_visual_up()
+	await _case_33_zero_smoothing_keeps_the_visual_rigid()
+	await _case_34_a_teleport_sized_jump_is_not_smoothed()
+	await _case_35_no_smooth_node_leaves_smoothing_off()
+	await _case_36_smoothing_setup_does_not_kill_a_subclass_process()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -1144,5 +1150,206 @@ func _case_30_snap_down_reach_is_exactly_step_height() -> void:
 		"30 snap-down reach is exactly step_height",
 		airborne > 0,
 		"airborne_frames=%d expected >0 (a 0.12 drop must not snap at 0.05)" % airborne,
+	)
+	world.queue_free()
+
+
+## Attaches a smooth_node child at a non-zero rest Y - non-zero on purpose, so a
+## test can prove the decay homes to the authored rest rather than to zero.
+##
+## The editor assigns smooth_node before the node enters the tree, so
+## NOTIFICATION_READY captures the rest Y and turns processing on. This harness
+## assigns the export after _add_character has already added the body, so that
+## one-time setup is re-run explicitly here; it only records the rest Y and
+## enables processing.
+func _attach_smooth_node(c: StairsCharacter, rest_y: float, smoothing: float) -> Node3D:
+	var cam: Node3D = Node3D.new()
+	cam.name = "SmoothPivot"
+	cam.position = Vector3(0.0, rest_y, 0.0)
+	c.add_child(cam)
+	c.smooth_node = cam
+	c.step_smoothing = smoothing
+	c.call(&"_init_step_smoothing")
+	return cam
+
+
+## Reads the private visual offset the decay chases back to rest.
+func _smooth_offset(c: StairsCharacter) -> float:
+	return c.get(&"_smooth_offset_y")
+
+
+## The step itself is real, so this exercises the accumulate call on the actual
+## apply site. The body steps up +0.2, so the visual has to be pushed the opposite
+## way - below rest - and then eased home. Decay is driven with an explicit dt
+## rather than by awaiting idle frames: the offset math is what is under test, and
+## a fixed dt makes it deterministic instead of hostage to the headless idle rate.
+func _case_31_step_up_eases_the_visual_down_then_home() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, 0.2)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var cam: Node3D = _attach_smooth_node(c, 0.5, 20.0)
+
+	# Sampled at the emit, before any decay, so it is the full push.
+	var offset_at_step: PackedFloat64Array = [0.0]
+	var fired: PackedInt32Array = [0]
+	c.stepped_up.connect(func() -> void:
+		if fired[0] == 0:
+			offset_at_step[0] = _smooth_offset(c)
+		fired[0] += 1
+	)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+
+	var pushed_down: bool = fired[0] >= 1 and offset_at_step[0] < -0.1
+
+	# Drive the decay to completion with a fixed 60 Hz dt.
+	for _i: int in 200:
+		c.call(&"_tick_step_smoothing", DELTA)
+	var homed: bool = absf(_smooth_offset(c)) < EPS and absf(cam.position.y - 0.5) < EPS
+
+	_check(
+		"31 a step up eases the visual down then home",
+		pushed_down and homed,
+		(
+			"offset_at_step=%.4f (expected < -0.1), cam.y=%.4f (expected ~0.50)"
+			% [offset_at_step[0], cam.position.y]
+		),
+	)
+	world.queue_free()
+
+
+## The down direction of the same mechanism. Case 05's world: the body snaps down
+## -0.2, so the visual is pushed the opposite way - above rest - before easing
+## back. Sign is the whole point, so it is asserted rather than the magnitude.
+func _case_32_step_down_eases_the_visual_up() -> void:
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
+	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.7, 0.0))
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	_attach_smooth_node(c, 0.0, 20.0)
+
+	var offset_at_step: PackedFloat64Array = [0.0]
+	var fired: PackedInt32Array = [0]
+	c.stepped_down.connect(func() -> void:
+		if fired[0] == 0:
+			offset_at_step[0] = _smooth_offset(c)
+		fired[0] += 1
+	)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+
+	_check(
+		"32 a step down eases the visual up",
+		fired[0] >= 1 and offset_at_step[0] > 0.1,
+		"offset_at_step=%.4f (expected > 0.1 on a downward snap)" % offset_at_step[0],
+	)
+	world.queue_free()
+
+
+## step_smoothing of zero is the off switch that keeps smooth_node assigned. The
+## body must still step, and the visual must not move from rest at all - accumulate
+## refuses to bank an offset and the tick collapses any residual to zero.
+func _case_33_zero_smoothing_keeps_the_visual_rigid() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, 0.2)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var cam: Node3D = _attach_smooth_node(c, 0.0, 0.0)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+	c.call(&"_tick_step_smoothing", DELTA)
+
+	var stepped: bool = absf(c.global_position.y - (REST_Y + 0.2)) < EPS
+	var rigid: bool = absf(_smooth_offset(c)) < EPS and absf(cam.position.y) < EPS
+	_check(
+		"33 zero step_smoothing keeps the visual rigid",
+		stepped and rigid,
+		(
+			"body_y=%.3f (expected ~%.2f), offset=%.4f cam.y=%.4f (expected ~0)"
+			% [c.global_position.y, REST_Y + 0.2, _smooth_offset(c), cam.position.y]
+		),
+	)
+	world.queue_free()
+
+
+## The accumulate gate rejects a jump larger than twice step_height as a teleport,
+## so a warp or an external shove does not drag the camera across the whole
+## distance. A legitimate step in the same call still banks, clamped to
+## step_height. Driven directly because a teleport is awkward to stage in physics.
+func _case_34_a_teleport_sized_jump_is_not_smoothed() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	_attach_smooth_node(c, 0.0, 20.0)
+	c.step_height = 0.33
+
+	# 5 m is far past 2 * step_height, so it is refused and the offset stays home.
+	c.call(&"_accumulate_step_smoothing", 5.0)
+	var ignored: bool = absf(_smooth_offset(c)) < EPS
+
+	# A real 0.2 step banks, pushed the opposite way and inside the step_height clamp.
+	c.call(&"_accumulate_step_smoothing", 0.2)
+	var banked: bool = is_equal_approx(_smooth_offset(c), -0.2)
+
+	_check(
+		"34 a teleport-sized jump is not smoothed",
+		ignored and banked,
+		"after teleport offset should be ~0 then ~-0.2, got %.4f" % _smooth_offset(c),
+	)
+	world.queue_free()
+
+
+## The default state: no smooth_node assigned. Smoothing must be entirely inert -
+## processing off, accumulate a no-op - which is what lets every one of the 30
+## cases above run unchanged. The step behaviour itself is covered there; this
+## pins that the new path adds nothing when the export is left empty.
+func _case_35_no_smooth_node_leaves_smoothing_off() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+
+	# _init_step_smoothing runs at NOTIFICATION_READY with smooth_node still null.
+	var processing_off: bool = not c.is_processing()
+	c.call(&"_accumulate_step_smoothing", 0.2)
+	var no_op: bool = absf(_smooth_offset(c)) < EPS
+
+	_check(
+		"35 no smooth_node leaves smoothing off",
+		processing_off and no_op,
+		"is_processing=%s offset=%.4f (expected off and 0)" % [c.is_processing(), _smooth_offset(c)],
+	)
+	world.queue_free()
+
+
+## The smoothing setup turns idle processing ON, never off. A subclass that
+## defines its own _process has processing auto-enabled by the engine; the base's
+## _init_step_smoothing runs after that at NOTIFICATION_READY, and must not switch
+## it back off when smooth_node is unassigned - doing so would silently kill the
+## subclass _process, the same shadowing trap the _notification hooks exist to
+## dodge. This is the regression pin for that fix: the subclass here defines
+## _process and assigns no smooth_node, the documented "off" state.
+func _case_36_smoothing_setup_does_not_kill_a_subclass_process() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	var c: StairsCharacter = _add_character(world, SUBCLASS_SCRIPT, 0.0)
+
+	# NOTIFICATION_READY has already fired inside _add_character, so if the base
+	# had disabled processing the subclass _process would already be dead.
+	var still_processing: bool = c.is_processing()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var subclass_ticked: int = c.get(&"custom_process_frames")
+
+	_check(
+		"36 smoothing setup does not disable a subclass _process",
+		still_processing and subclass_ticked > 0,
+		(
+			"is_processing=%s custom_process_frames=%d — expected the subclass _process to keep running"
+			% [still_processing, subclass_ticked]
+		),
 	)
 	world.queue_free()

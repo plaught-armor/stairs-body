@@ -13,6 +13,7 @@ extends StairsCharacter
 var custom_ready_ran: bool = false
 var custom_physics_frames: int = 0
 var custom_notifications: int = 0
+var custom_process_frames: int = 0
 
 
 func _ready() -> void:
@@ -21,6 +22,13 @@ func _ready() -> void:
 
 func _physics_process(_delta: float) -> void:
 	custom_physics_frames += 1
+
+
+# Defining _process auto-enables idle processing on this subclass. Case 36 checks
+# the base's smoothing setup does not switch it back off when smooth_node is
+# unassigned - the same shadowing trap the _notification hooks avoid.
+func _process(_delta: float) -> void:
+	custom_process_frames += 1
 
 
 func _notification(what: int) -> void:
