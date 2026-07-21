@@ -85,6 +85,8 @@ func _run_all() -> void:
 	await _case_34_a_teleport_sized_jump_is_not_smoothed()
 	await _case_35_no_smooth_node_leaves_smoothing_off()
 	await _case_36_smoothing_setup_does_not_kill_a_subclass_process()
+	await _case_37_steps_up_from_a_standstill_against_the_face()
+	await _case_38_backpressure_does_not_seat_against_the_push()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -545,11 +547,11 @@ func _resolved_margin(c: StairsCharacter) -> float:
 func _count_signals(c: StairsCharacter) -> Dictionary:
 	var counts: Dictionary = { "any": 0, "up": 0, "down": 0 }
 	c.stepped.connect(func() -> void:
-				counts["any"] += 1)
+			counts["any"] += 1)
 	c.stepped_up.connect(func() -> void:
-				counts["up"] += 1)
+			counts["up"] += 1)
 	c.stepped_down.connect(func() -> void:
-				counts["down"] += 1)
+			counts["down"] += 1)
 	return counts
 
 
@@ -1193,10 +1195,11 @@ func _case_31_step_up_eases_the_visual_down_then_home() -> void:
 	# Sampled at the emit, before any decay, so it is the full push.
 	var offset_at_step: PackedFloat64Array = [0.0]
 	var fired: PackedInt32Array = [0]
-	c.stepped_up.connect(func() -> void:
-		if fired[0] == 0:
-			offset_at_step[0] = _smooth_offset(c)
-		fired[0] += 1
+	c.stepped_up.connect(
+		func() -> void:
+			if fired[0] == 0:
+				offset_at_step[0] = _smooth_offset(c)
+			fired[0] += 1
 	)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
@@ -1232,10 +1235,11 @@ func _case_32_step_down_eases_the_visual_up() -> void:
 
 	var offset_at_step: PackedFloat64Array = [0.0]
 	var fired: PackedInt32Array = [0]
-	c.stepped_down.connect(func() -> void:
-		if fired[0] == 0:
-			offset_at_step[0] = _smooth_offset(c)
-		fired[0] += 1
+	c.stepped_down.connect(
+		func() -> void:
+			if fired[0] == 0:
+				offset_at_step[0] = _smooth_offset(c)
+			fired[0] += 1
 	)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
@@ -1350,6 +1354,108 @@ func _case_36_smoothing_setup_does_not_kill_a_subclass_process() -> void:
 		(
 			"is_processing=%s custom_process_frames=%d — expected the subclass _process to keep running"
 			% [still_processing, subclass_ticked]
+		),
+	)
+	world.queue_free()
+
+
+## Regression pin for the standstill-against-the-face bug. Case 07 proves the
+## desired_velocity fallback raises the body from a dead stop; this proves the
+## body actually ENDS UP on the step, which case 07 explicitly does not - it
+## drives stair_step_up in isolation and notes the body drops back once
+## move_and_slide runs with no velocity to carry it.
+##
+## The drive models an acceleration controller pressed head-on into the step.
+## move_and_slide zeroes the into-wall component of velocity every frame and a
+## weak accel rebuilds it only to accel*delta, so velocity stays pinned near zero
+## while desired_velocity carries the full intent. Rather than lean on the physics
+## to zero it - which depends on the exact gap and margin, and lets a body that
+## starts a hair off the face accelerate across the gap and seat the ordinary way,
+## hiding the bug - the velocity is pinned here directly: a fixed 0.05 m/s, the
+## kind of residue a 3 m/s^2 controller leaves. That deterministically stages the
+## failure. Before the fix the probe shrank to that 0.05 and the step was never
+## found; the body sat against the face forever.
+func _case_37_steps_up_from_a_standstill_against_the_face() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, 0.2)
+	# Parked flush against the step face at x = 1.0.
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 1.0 - BODY_RADIUS - 0.002)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+
+	# The residual an acceleration controller cannot climb past while the wall
+	# keeps zeroing it - far below what move_and_slide needs to carry the raised
+	# body over the lip on its own.
+	const WALL_PINNED_VX: float = 0.05
+	for _i: int in WALK_FRAMES:
+		await get_tree().physics_frame
+		c.velocity.x = WALL_PINNED_VX
+		c.velocity.z = 0.0
+		c.velocity.y -= GRAVITY * DELTA
+		# Intent is the full walk target, not the collapsed velocity - this is the
+		# value the fix reads to drive the probe when velocity cannot.
+		c.desired_velocity = Vector3(WALK_SPEED, 0.0, 0.0)
+		c.move_and_stair_step()
+
+	# The height is the discriminator: pinned to the face the body sits at REST_Y,
+	# stepped it stands a step higher. x barely advances here only because the test
+	# holds velocity at a crawl - the point is that it rose onto the step and rests
+	# there rather than dropping straight back, so pair the height with is_on_floor.
+	var on_step: bool = absf(c.global_position.y - (REST_Y + 0.2)) < EPS
+	_check(
+		"37 steps up from a standstill against the face",
+		on_step and c.is_on_floor(),
+		(
+			"pos=%v on_floor=%s expected y~%.2f standing — the body stayed pinned to"
+			% [c.global_position, c.is_on_floor(), REST_Y + 0.2]
+			+ " the face, which is the standstill-step bug this pins"
+		),
+	)
+	world.queue_free()
+
+
+## Guards the intent-probe against backpressure. When velocity opposes the held
+## intent - knockback, an explosion, a shove into the step while forward is still
+## pressed - intent is the larger vector, so a naive "probe the bigger one" would
+## seat the body forward onto the step while move_and_slide carries it backward,
+## popping it on and off the lip every frame. The dot < 0 guard keeps velocity the
+## trusted signal there, leaving the shove to move_and_slide as before.
+##
+## Driven one frame in isolation, like case 07: with velocity pointing away from
+## the step the probe must find nothing and leave the body where it is. Before the
+## guard, the forward intent probed forward, found the step and seated the body
+## onto it - the pop this pins against. The standstill fix is untouched: a
+## wall-pinned near-zero velocity still points forward, dots positive with intent,
+## and falls through to the intent probe (case 37 covers that).
+func _case_38_backpressure_does_not_seat_against_the_push() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, 0.2)
+	# Flush against the step face, the same standstill start as case 37.
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 1.0 - BODY_RADIUS - 0.002)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+
+	await get_tree().physics_frame
+	c.grounded = true
+	# Being shoved back off the step while the player still holds forward. Intent is
+	# the larger vector; the guard must not let it seat the body against the push.
+	c.velocity = Vector3(-2.0, -GRAVITY * DELTA, 0.0)
+	c.desired_velocity = Vector3(WALK_SPEED, 0.0, 0.0)
+	var before: Vector3 = c.global_position
+	c.stair_step_up()
+
+	# stair_step_up commits only Y and X/Z, never touching a body it found no step
+	# for. The probe ran backward, found nothing, and left the body put.
+	var stayed: bool = c.global_position.is_equal_approx(before)
+	_check(
+		"38 backpressure does not seat the body against the push",
+		stayed,
+		(
+			"pos went %v -> %v — a velocity opposing intent seated the body forward,"
+			% [before, c.global_position]
+			+ " the backpressure pop the dot guard exists to stop"
 		),
 	)
 	world.queue_free()

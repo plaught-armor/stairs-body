@@ -374,19 +374,54 @@ func stair_step_up() -> void:
 	if not grounded and not force_stair_step:
 		return
 
-	# The fallback is flattened the same way actual velocity is. A controller that
-	# hands over its whole movement intent - input plus gravity - puts a vertical
-	# component in here, and an unflattened one aims the first sweep forward and
-	# down, so it reaches the ground before the step face. The ground reports a
-	# walkable normal and the bail below throws away a step that should have
-	# happened. Flattening also lets a purely vertical intent fall through the
-	# zero-check, rather than running four sweeps on a straight-up test velocity.
+	# Both inputs are flattened the same way. A controller that hands over its
+	# whole movement intent - input plus gravity - puts a vertical component in
+	# here, and an unflattened one aims the first sweep forward and down, so it
+	# reaches the ground before the step face. The ground reports a walkable normal
+	# and the bail below throws away a step that should have happened. Flattening
+	# also lets a purely vertical intent fall through the zero-check, rather than
+	# running four sweeps on a straight-up test velocity.
 	var horizontal_velocity: Vector3 = velocity * _HORIZONTAL
-	var testing_velocity: Vector3 = (
-		horizontal_velocity
-		if horizontal_velocity != Vector3.ZERO
-		else desired_velocity * _HORIZONTAL
+	var intent: Vector3 = desired_velocity * _HORIZONTAL
+
+	# Probe along whichever is larger: actual velocity, or the intent the
+	# controller declared in desired_velocity. They usually agree, but pressed
+	# head-on into a step from a standstill they do not: move_and_slide zeroes the
+	# into-wall component of velocity every frame, and an acceleration-based
+	# controller (move_toward, friction) can only rebuild it to accel*delta before
+	# the next frame's wall contact kills it again - so velocity stays pinned near
+	# zero and the probe distance (testing_velocity * delta) shrinks to nothing,
+	# never reaching far enough onto the step to register a rise. desired_velocity
+	# carries the full intended speed, unpolluted by the collision, so it drives
+	# the probe when velocity cannot. carried_by_velocity records which won,
+	# because the apply site below needs to know: a step the probe found on intent
+	# alone has no velocity behind it for move_and_slide to seat with.
+	#
+	# Two guards keep velocity as the trusted signal:
+	#   - it is at least as fast as intent (the ordinary moving case), or
+	#   - it points against intent (dot < 0). This is the backpressure case -
+	#     knockback, an explosion, a shove - where the controller still holds
+	#     forward but the body is being pushed back. Intent is larger there, so
+	#     without this the probe would seat the body forward onto the step while
+	#     move_and_slide carries it backward, popping it on and off the lip each
+	#     frame. Trusting the opposing velocity instead leaves it to move_and_slide,
+	#     which is what handled it before the fix. A wall-pinned near-zero velocity
+	#     still dots positive with intent (both point forward), so it correctly
+	#     falls through to intent - the bug this fixes is untouched.
+	#
+	# Backward compatible - a controller that never sets desired_velocity leaves
+	# intent at zero, so both guards hold (0 >= 0, dot is 0 not negative) and this
+	# reduces to the original "use velocity" behaviour. The old code fell to
+	# desired_velocity only when the *horizontal* velocity was exactly zero; the
+	# magnitude test widens that to "whenever intent is the stronger forward
+	# signal", which is what a near-zero-but-not-zero wall-pinned velocity needs.
+	# Ties in magnitude break to velocity, keeping the probe aligned with the body's
+	# real motion when the two speeds match.
+	var carried_by_velocity: bool = (
+		horizontal_velocity.length_squared() >= intent.length_squared()
+		or horizontal_velocity.dot(intent) < 0.0
 	)
+	var testing_velocity: Vector3 = horizontal_velocity if carried_by_velocity else intent
 
 	# Not moving or attempting to move, skip stair check
 	if testing_velocity == Vector3.ZERO:
@@ -496,9 +531,24 @@ func stair_step_up() -> void:
 	if surface_normal.angle_to(Vector3.UP) > floor_max_angle:
 		return #Can't stand on the thing we're trying to step on anyway
 
-	# Move player to match the step height we just found
+	# Move player to match the step height we just found. Only the Y is committed
+	# in the common case: move_and_slide runs right after and owns the horizontal,
+	# carrying the raised body forward over the lip using velocity. Committing X/Z
+	# here as well would double that frame's forward motion.
+	#
+	# But when the step was found on intent rather than velocity (carried_by_velocity
+	# false - a standstill against the face, see the probe above), there is no
+	# velocity for move_and_slide to carry with. Y alone leaves the body floating at
+	# step height with its footprint still behind the lip; unsupported, it drops
+	# straight back the next frame and the character is stuck pressing forward
+	# forever. So seat the horizontal too, planting the body on the step the probe
+	# located. This is the one case the double-move worry does not apply to, because
+	# the velocity that would double it is the velocity that is missing.
 	var pre_step_y: float = global_position.y
 	global_position.y = motion_transform.origin.y
+	if not carried_by_velocity:
+		global_position.x = motion_transform.origin.x
+		global_position.z = motion_transform.origin.z
 	_accumulate_step_smoothing(global_position.y - pre_step_y)
 
 	stepped_up.emit()
