@@ -44,6 +44,9 @@ reads the margin off the shape you assign and warns if it is above 0.01.
 |---|---|
 | `collider` | The character's `CollisionShape3D`. If left unassigned, a child node named `Collider` is used, which is how older scenes were set up. |
 | `step_height` | How high the character can step up, and be snapped down onto. Default `0.33`, which suits a ~2 m character - the useful part is the ratio, roughly 0.15-0.25 of character height, since the absolute value does not survive rescaling your character. |
+| `step_down_height` | How far the character can be snapped back *down*, when that should differ from how far it can climb. Negative - the default - follows `step_height`, which is what every existing scene expects. Split them when up and down want different generosity: a short reach down stops a character being hauled onto every ledge it walks off, a long one keeps it glued to stairs it can only just climb. |
+| `min_step_forward` | Smallest distance the forward leg of the check will probe, whatever the tick rate. Default `0.02`, the same value and the same reason as Jolt's `mWalkStairsMinStepForward`. Below this floor the check does not degrade, it stalls: see [Tick rate](#tick-rate) below. `0` removes the floor and restores the old behaviour, which exists to measure against rather than to ship. |
+| `step_slide_iterations` | How many times the forward leg may slide along a contact and sweep again. Default `4`; `1` is the old single sweep, which cannot climb a staircase with a wall beside it. There is nothing to gain past a handful - each slide strictly shrinks the motion, so the leg runs out of length long before it runs out of iterations. |
 | `desired_velocity` | Where the controller *wants* to go this frame. Only used when actual horizontal velocity is zero, which is what makes stepping up from a standstill work. Any vertical component is ignored, so handing over a whole movement vector with gravity already in it is fine. Cleared for you after each call. |
 | `force_stair_step` | Runs the step check even when not grounded, for cases like a wall jump that should have caught a ledge but snagged just below it. Cleared for you after each call. |
 | `grounded` / `was_grounded` | Ground state as the addon sees it, which is not always `is_on_floor()` - the step logic sometimes moves the body in ways that leave `is_on_floor()` reading false. Both are refreshed at the top of `move_and_stair_step()`, before it moves anything, so `grounded` is the state as of the *start* of the current frame and `was_grounded` the frame before. Neither reports this frame's post-move state; use `is_on_floor()` for that. |
@@ -101,6 +104,41 @@ constant, so `20` settles in ~150 ms (a Source-like feel), `8-10` floats, past
 `30` is almost the raw snap. It is framerate independent, so a value feels the
 same at 60 and 144 Hz. Set it to `0`, or leave `smooth_node` unassigned, and the
 body snaps exactly as it did before - which is what every existing scene gets.
+
+## Tick rate
+
+Every distance the step check works with comes from `velocity * delta`, so the
+whole check shrinks as the physics tick rate rises. Left unbounded that does not
+degrade gracefully - it deadlocks. Once `move_and_slide` has parked the body one
+probe length short of a step, the probe reaches the step face with nothing left
+over, the forward leg moves that nothing, and the check rejects it. On the next
+frame nothing has moved, so it happens again, forever: the character stands at
+the foot of a step it can climb, pushing.
+
+`min_step_forward` is the floor that prevents it, defaulting to `0.02` - the same
+value, for the same reason, as Jolt's `mWalkStairsMinStepForward`. Measured
+before it existed, a 3 m/s walk into a 0.2 m step stalled at 240 Hz and a 0.5 m/s
+walk stalled at 240 and 480; 60 Hz cleared every speed, which is why this went
+unnoticed for so long. `test/diag_tickrate.gd` walks the whole rate x speed grid
+if you want to see it.
+
+It only ever lengthens a *probe*. The body still moves as far as its velocity
+carries it, except on frames whose entire reach is shorter than the floor - where
+the addon seats the body itself, because `move_and_slide` cannot cover ground the
+probe found beyond its own reach.
+
+## Walls beside stairs
+
+The forward leg of the check slides along whatever it hits and sweeps again, up
+to `step_slide_iterations` times. Without that, a wall running alongside a
+staircase steals the first contact from the step: the leftover motion still
+points into the wall, the leg travels nothing, and a player holding a diagonal
+into a banister cannot climb at all while the same walk one push away from the
+wall climbs fine. `test/diag_wallhug.gd` is that comparison.
+
+Walking head-on into a wall costs nothing extra - the motion slides to zero on
+the first try and the loop breaks out - so the measured per-frame cost is
+unchanged from the single-sweep version.
 
 ## Signals
 

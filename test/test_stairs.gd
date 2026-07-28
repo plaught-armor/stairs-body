@@ -90,6 +90,10 @@ func _run_all() -> void:
 	await _case_39_climbs_while_pressed_against_a_wall()
 	await _case_40_climbs_at_a_high_tick_rate()
 	await _case_41_a_step_does_not_lurch_the_body_forward()
+	await _case_42_step_down_height_bounds_the_snap()
+	await _case_43_step_down_height_reaches_past_the_climb()
+	await _case_44_one_slide_iteration_is_the_old_single_sweep()
+	await _case_45_a_zero_forward_floor_is_the_old_unfloored_leg()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -1627,6 +1631,135 @@ func _case_38_backpressure_does_not_seat_against_the_push() -> void:
 			"pos went %v -> %v — a velocity opposing intent seated the body forward,"
 			% [before, c.global_position]
 			+ " the backpressure pop the dot guard exists to stop"
+		),
+	)
+	world.queue_free()
+
+
+## The world of case 05 - a 0.2 m drop the default snaps onto - with the snap
+## given its own shorter reach. The climb is untouched at 0.33, so anything that
+## resolved the reach off step_height keeps snapping and this fails.
+##
+## Case 13 is the neighbouring shape: same drop, snap refused because step_height
+## itself was lowered. Together they say the two numbers are read separately.
+func _case_42_step_down_height_bounds_the_snap() -> void:
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
+	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.7, 0.0))
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	# The climb stays at the 0.33 default. Only the reach down is shortened, and
+	# only past what the drop needs.
+	c.step_down_height = 0.1
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	var airborne: int = await _simulate_counting_airborne(
+		c,
+		Vector3(WALK_SPEED, 0.0, 0.0),
+		WALK_FRAMES,
+	)
+
+	# The same binary discriminator case 13 uses, for the same reason: the body
+	# ends up on the lower slab either way, so position cannot tell a snap from a
+	# fall. A snap keeps it planted across the edge and reports zero airborne
+	# frames; out of reach, it leaves the floor and falls.
+	_check(
+		"42 step_down_height bounds the snap independently of step_height",
+		airborne > 0,
+		(
+			"airborne_frames=%d expected >0 - a 0.20 drop snapped at a 0.10 reach," % airborne
+			+ " so the snap is still reading step_height"
+		),
+	)
+	world.queue_free()
+
+
+## The inverse split: a character that can barely climb, given a long reach down.
+## The drop is past what step_height would allow, so a snap here can only come
+## from step_down_height being read on its own.
+func _case_43_step_down_height_reaches_past_the_climb() -> void:
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
+	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.8, 0.0))
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	c.step_height = 0.1
+	c.step_down_height = 0.5
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+
+	var landed: bool = absf(c.global_position.y - (REST_Y - 0.3)) < EPS
+	_check(
+		"43 step_down_height reaches further down than the climb reaches up",
+		landed and c.is_on_floor(),
+		(
+			"pos=%v on_floor=%s expected y~%.2f - the snap was capped at step_height"
+			% [c.global_position, c.is_on_floor(), REST_Y - 0.3]
+		),
+	)
+	world.queue_free()
+
+
+## Turning the slide loop down to one iteration is exactly the single sweep the
+## class shipped before, so case 39's wall hug must fail again. Pins that the
+## export is wired to the loop rather than decorative.
+func _case_44_one_slide_iteration_is_the_old_single_sweep() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, 0.2)
+	_add_box(world, Vector3(20.0, 6.0, 0.5), Vector3(0.0, 3.0, BODY_RADIUS + 0.25))
+
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	c.step_slide_iterations = 1
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, WALK_SPEED), WALK_FRAMES)
+
+	var climbed: bool = absf(c.global_position.y - (REST_Y + 0.2)) < EPS
+	_check(
+		"44 one slide iteration is the old single sweep",
+		not climbed,
+		(
+			"pos=%v climbed with the slide loop turned off, so case 39 is passing for"
+			% c.global_position
+			+ " some reason other than the slide and step_slide_iterations is not wired"
+		),
+	)
+	world.queue_free()
+
+
+## The same wiring check for the other knob: zero the forward floor and case 40's
+## tick rate stalls again, which is the behaviour the floor was added to remove.
+func _case_45_a_zero_forward_floor_is_the_old_unfloored_leg() -> void:
+	const RATE: int = 240
+	var original_rate: int = Engine.physics_ticks_per_second
+	Engine.physics_ticks_per_second = RATE
+	var delta: float = 1.0 / float(RATE)
+
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, 0.2)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.4)
+	c.min_step_forward = 0.0
+
+	for _i: int in SETTLE_FRAMES * 4:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * delta
+		c.move_and_stair_step()
+
+	for _i: int in WALK_FRAMES * 4:
+		await get_tree().physics_frame
+		c.velocity.x = WALK_SPEED
+		c.velocity.y -= GRAVITY * delta
+		c.desired_velocity = Vector3(WALK_SPEED, 0.0, 0.0)
+		c.move_and_stair_step()
+
+	var climbed: bool = absf(c.global_position.y - (REST_Y + 0.2)) < EPS
+	Engine.physics_ticks_per_second = original_rate
+	_check(
+		"45 a zero forward floor is the old unfloored leg",
+		not climbed,
+		(
+			"pos=%v climbed at %d Hz with the floor removed, so case 40 is passing for"
+			% [c.global_position, RATE]
+			+ " some reason other than the floor and min_step_forward is not wired"
 		),
 	)
 	world.queue_free()

@@ -26,6 +26,35 @@ signal stepped_down
 ## Past ~0.25 x height a character starts silently climbing crates and low walls.
 @export var step_height: float = 0.33
 
+## How far the character can be snapped back down onto a surface, if that should
+## differ from how far it can climb. Negative - the default - follows step_height,
+## which is what this class has always done and what every existing scene expects.
+##
+## Worth splitting when up and down want different generosity. A short reach down
+## against a tall reach up keeps a character from being hauled onto every ledge it
+## walks off, which reads as heavy; a long reach down against a short reach up
+## keeps it glued to stairs it can only just climb. Unreal and the stair-step demos
+## both carry the pair as separate numbers for this reason.
+##
+## Reach is what this bounds, not what gets committed: the snap moves the body to
+## whatever it lands on within reach, so a bigger number finds more surfaces rather
+## than dropping the character further onto the one it would have found anyway.
+@export var step_down_height: float = -1.0
+
+## Smallest distance the forward leg of the step check will probe, whatever the
+## tick rate. Every distance in the check comes from velocity * delta, and below
+## this floor the check stalls outright rather than degrading - see the note on
+## _MIN_STEP_FORWARD. Zero removes the floor and restores the pre-fix behaviour,
+## which is a stall waiting for a high enough tick rate; it exists to be measured
+## against, not to be shipped.
+@export_range(0.0, 0.2, 0.001) var min_step_forward: float = _MIN_STEP_FORWARD
+
+## How many times the forward leg may slide along a contact and sweep again. One
+## means the old single sweep, which cannot climb a staircase with a wall beside
+## it. Past a handful there is nothing left to gain: each slide strictly shrinks
+## the motion, so the leg runs out of length long before it runs out of iterations.
+@export_range(1, 8) var step_slide_iterations: int = _FORWARD_SLIDE_ITERATIONS
+
 ## The character's collision shape. Margin should be as low as you can get it
 ## without snagging on edges. A CylinderShape3D is strongly recommended: a
 ## capsule's rounded bottom catches the top corner of a step and reports a
@@ -319,6 +348,15 @@ func _init_step_smoothing() -> void:
 	set_process(true)
 
 
+# How far down the snap may reach, resolving the "follow step_height" default.
+# Read at every use rather than resolved once, because both numbers are plain
+# exports a controller is free to retune between frames - a crouch that lowers the
+# step reach, a difficulty setting - and caching would hold the old pair until
+# something re-ran the resolve.
+func _step_down_reach() -> float:
+	return step_height if step_down_height < 0.0 else step_down_height
+
+
 # Called from the two apply sites with the signed height the body just moved:
 # positive up, negative down. The visual is pushed the opposite way, so it holds
 # its world position for a frame before the decay pulls it home.
@@ -328,15 +366,19 @@ func _accumulate_step_smoothing(step_delta_y: float) -> void:
 
 	# Only ease genuine steps. A jump larger than a full step in either direction
 	# is a teleport, a respawn, or an external shove - easing that would drag the
-	# camera across the whole distance. step_height is the most the body can move
-	# in one legitimate step up; a snap down can add floor_snap_length on top, so
-	# the gate is generous at twice step_height rather than exactly it.
-	if absf(step_delta_y) > step_height * 2.0:
+	# camera across the whole distance. The larger of the two reaches is the most
+	# the body can move in one legitimate step; a snap down can add
+	# floor_snap_length on top, so the gate is generous at twice that rather than
+	# exactly it. Taking the larger rather than the matching one keeps this a single
+	# comparison, and the cost of being generous here is only that a teleport of
+	# between one and two steps is eased instead of skipped.
+	var reach: float = maxf(step_height, _step_down_reach())
+	if absf(step_delta_y) > reach * 2.0:
 		return
 
-	# Clamped to one step_height so a burst of steps in quick succession cannot
-	# stack the offset into a visible lurch larger than a single step.
-	_smooth_offset_y = clampf(_smooth_offset_y - step_delta_y, -step_height, step_height)
+	# Clamped to one step so a burst of steps in quick succession cannot stack the
+	# offset into a visible lurch larger than a single step.
+	_smooth_offset_y = clampf(_smooth_offset_y - step_delta_y, -reach, reach)
 
 
 # Render-frame decay of the visual offset back to the rest position. Framerate
@@ -382,7 +424,7 @@ func stair_step_down() -> void:
 		return
 
 	_params.from = global_transform
-	_params.motion = Vector3.DOWN * step_height
+	_params.motion = Vector3.DOWN * _step_down_reach()
 	# Nothing to step down on
 	if not PhysicsServer3D.body_test_motion(get_rid(), _params, _result):
 		return
@@ -529,8 +571,8 @@ func stair_step_up() -> void:
 	# WalkStairs moves the shape rather than sweeping once, and dresswithpockets'
 	# write-up wraps its sweeps in an explicit slide loop.
 	var forward_motion: Vector3 = remainder
-	if forward_motion.length() < _MIN_STEP_FORWARD:
-		forward_motion = testing_velocity.normalized() * _MIN_STEP_FORWARD
+	if forward_motion.length() < min_step_forward:
+		forward_motion = testing_velocity.normalized() * min_step_forward
 
 	# Whether this frame can cover the ground the probe is about to, which decides
 	# who owns the horizontal at the commit below.
@@ -543,10 +585,10 @@ func stair_step_up() -> void:
 	# frames, where move_and_slide then adds its full share on top: a 0.05 m frame
 	# advanced 0.12 m on the step, a visible burst on the one frame that should
 	# look like every other.
-	var probe_outruns_the_frame: bool = distance.length() < _MIN_STEP_FORWARD
+	var probe_outruns_the_frame: bool = distance.length() < min_step_forward
 
 	var forward_travel: Vector3 = Vector3.ZERO
-	for _i: int in _FORWARD_SLIDE_ITERATIONS:
+	for _i: int in step_slide_iterations:
 		_params.from = motion_transform
 		_params.motion = forward_motion
 		var blocked: bool = PhysicsServer3D.body_test_motion(get_rid(), _params, _result)
