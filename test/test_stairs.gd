@@ -87,6 +87,9 @@ func _run_all() -> void:
 	await _case_36_smoothing_setup_does_not_kill_a_subclass_process()
 	await _case_37_steps_up_from_a_standstill_against_the_face()
 	await _case_38_backpressure_does_not_seat_against_the_push()
+	await _case_39_climbs_while_pressed_against_a_wall()
+	await _case_40_climbs_at_a_high_tick_rate()
+	await _case_41_a_step_does_not_lurch_the_body_forward()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -546,12 +549,18 @@ func _resolved_margin(c: StairsCharacter) -> float:
 
 func _count_signals(c: StairsCharacter) -> Dictionary:
 	var counts: Dictionary = { "any": 0, "up": 0, "down": 0 }
-	c.stepped.connect(func() -> void:
-			counts["any"] += 1)
-	c.stepped_up.connect(func() -> void:
-			counts["up"] += 1)
-	c.stepped_down.connect(func() -> void:
-			counts["down"] += 1)
+	c.stepped.connect(
+		func() -> void:
+			counts["any"] += 1,
+	)
+	c.stepped_up.connect(
+		func() -> void:
+			counts["up"] += 1,
+	)
+	c.stepped_down.connect(
+		func() -> void:
+			counts["down"] += 1,
+	)
 	return counts
 
 
@@ -1073,7 +1082,7 @@ func _case_29_a_clamped_rise_never_sinks_the_character() -> void:
 			.connect(
 		func() -> void:
 			lowest[0] = minf(lowest[0], c.global_position.y)
-			ups[0] += 1
+			ups[0] += 1,
 	)
 
 	for _i: int in 40:
@@ -1199,7 +1208,7 @@ func _case_31_step_up_eases_the_visual_down_then_home() -> void:
 		func() -> void:
 			if fired[0] == 0:
 				offset_at_step[0] = _smooth_offset(c)
-			fired[0] += 1
+			fired[0] += 1,
 	)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
@@ -1239,7 +1248,7 @@ func _case_32_step_down_eases_the_visual_up() -> void:
 		func() -> void:
 			if fired[0] == 0:
 				offset_at_step[0] = _smooth_offset(c)
-			fired[0] += 1
+			fired[0] += 1,
 	)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
@@ -1410,6 +1419,168 @@ func _case_37_steps_up_from_a_standstill_against_the_face() -> void:
 			"pos=%v on_floor=%s expected y~%.2f standing — the body stayed pinned to"
 			% [c.global_position, c.is_on_floor(), REST_Y + 0.2]
 			+ " the face, which is the standstill-step bug this pins"
+		),
+	)
+	world.queue_free()
+
+
+## The forward leg of the step check slides along whatever it meets. Without that
+## a wall beside a staircase steals the first contact from the step, the leftover
+## motion still points into the wall, and the leg travels nothing - so a player
+## holding a diagonal into a banister cannot climb, while the same walk one push
+## away from the wall climbs fine. Pinned as the pair, because a world where
+## neither run climbs is a broken world rather than a regression.
+##
+## test/diag_wallhug.gd is the roomier version of this, a four step staircase
+## walked three ways; this is the smallest shape that still fails without the fix.
+func _case_39_climbs_while_pressed_against_a_wall() -> void:
+	# One character per world, like every other case: the first run finishes
+	# standing on the step, and leaving it there as scenery for the second is the
+	# kind of coupling that survives until someone moves the step.
+	var hugging: Vector3 = await _walk_beside_a_wall(Vector3(WALK_SPEED, 0.0, WALK_SPEED))
+	var open: Vector3 = await _walk_beside_a_wall(Vector3(WALK_SPEED, 0.0, 0.0))
+
+	var target_y: float = REST_Y + 0.2
+	var hugging_climbed: bool = absf(hugging.y - target_y) < EPS
+	var open_climbed: bool = absf(open.y - target_y) < EPS
+	var why: String = "the sideways push cost the climb"
+	if not open_climbed:
+		why = (
+			"the world is wrong, neither climbed"
+			if not hugging_climbed
+			else "only the straight walk failed, which is a broken control"
+		)
+	_check(
+		"39 climbs a step while pressed against a wall beside it",
+		hugging_climbed and open_climbed,
+		"hugging=%v open=%v expected both at y~%.2f - %s" % [hugging, open, target_y, why],
+	)
+
+
+## One run of case 39's world, torn down after. `push` carries the sideways
+## component: with it the body rides the wall, without it the same walk runs a
+## push away from it, which is the control.
+func _walk_beside_a_wall(push: Vector3) -> Vector3:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, 0.2)
+	# A wall along the walk, its face exactly on the character's radius so a
+	# sideways push holds contact without ever embedding the body.
+	_add_box(world, Vector3(20.0, 6.0, 0.5), Vector3(0.0, 3.0, BODY_RADIUS + 0.25))
+
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	await _simulate(c, push, WALK_FRAMES)
+
+	var where: Vector3 = c.global_position
+	world.queue_free()
+	await get_tree().physics_frame
+	return where
+
+
+## Every distance in the step check is velocity * delta, so the whole check
+## shrinks with the tick rate. Left unclamped it stalls outright rather than
+## degrading: move_and_slide parks the body a probe length short of the step, the
+## probe reaches the face with nothing left over, the forward leg moves that
+## nothing and is rejected - on that frame and every frame after, because nothing
+## ever moves again. _MIN_STEP_FORWARD is the floor that stops it, and this walks
+## the same step at four times the default rate to hold that floor in place.
+##
+## test/diag_tickrate.gd sweeps the whole rate x speed grid; this pins one cell
+## that was stuck before the floor existed.
+func _case_40_climbs_at_a_high_tick_rate() -> void:
+	const RATE: int = 240
+	var original_rate: int = Engine.physics_ticks_per_second
+	Engine.physics_ticks_per_second = RATE
+	var delta: float = 1.0 / float(RATE)
+
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, 0.2)
+	# Started part way in rather than at the far end: where the body first meets
+	# the face decides how much of the probe is left over, and this offset is the
+	# one measured stuck at this rate before the floor existed.
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.4)
+
+	# Four times the frames for four times the rate, here and in the walk below,
+	# so both cover the same simulated time as every other case.
+	for _i: int in SETTLE_FRAMES * 4:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * delta
+		c.move_and_stair_step()
+
+	for _i: int in WALK_FRAMES * 4:
+		await get_tree().physics_frame
+		c.velocity.x = WALK_SPEED
+		c.velocity.y -= GRAVITY * delta
+		c.desired_velocity = Vector3(WALK_SPEED, 0.0, 0.0)
+		c.move_and_stair_step()
+
+	var climbed: bool = absf(c.global_position.y - (REST_Y + 0.2)) < EPS
+	Engine.physics_ticks_per_second = original_rate
+	_check(
+		"40 climbs a step at a high physics tick rate",
+		climbed,
+		(
+			"pos=%v at %d Hz, expected y~%.2f - the body stalled at the step face,"
+			% [c.global_position, RATE, REST_Y + 0.2]
+			+ " which is the short-probe deadlock the minimum forward leg prevents"
+		),
+	)
+	world.queue_free()
+
+
+## Case 28 pins the floor under a step-up frame - it must not stall. This pins the
+## ceiling over it: it must not lurch either.
+##
+## The forward leg is probed, not travelled, so whenever the addon seats the
+## horizontal itself move_and_slide is about to cover that ground again. The seat
+## is gated on the frame being too short for move_and_slide to reach the landing,
+## and getting that gate wrong is not visible in any end-position assertion: an
+## earlier revision keyed it off "was the leg lengthened" instead, which is true on
+## ordinary walking frames too, and a 0.05 m frame advanced 0.12 m on the step
+## while still arriving at the right place. Only a per-frame measurement sees it.
+##
+## The start offset is load-bearing, in the way case 40's is. Where the body first
+## touches the face decides how much of the probe is left over, and the burst only
+## exists on frames where that leftover is short enough for the leg to be
+## lengthened. Starting at zero, at WALK_SPEED and the default rate, first touch
+## lands in that zone. Change any one of the three and check the case still fails
+## on the revision it pins, or it is quietly guarding nothing.
+func _case_41_a_step_does_not_lurch_the_body_forward() -> void:
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, 0.2)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+
+	# What one frame of walking covers, and the most a single frame is allowed to
+	# cover. Generous: the burst this pins was 2.4x, so half again leaves room for
+	# solver noise without leaving room for the bug.
+	var per_frame: float = WALK_SPEED * DELTA
+	var ceiling: float = per_frame * 1.5
+
+	var worst: float = 0.0
+	var previous_x: float = c.global_position.x
+	for _i: int in WALK_FRAMES:
+		await get_tree().physics_frame
+		c.velocity.x = WALK_SPEED
+		c.velocity.y -= GRAVITY * DELTA
+		c.desired_velocity = Vector3(WALK_SPEED, 0.0, 0.0)
+		c.move_and_stair_step()
+		# Magnitude, not signed: a step that shoved the body backward would clamp to
+		# the zero this starts at and pass a check named for the worst frame.
+		worst = maxf(worst, absf(c.global_position.x - previous_x))
+		previous_x = c.global_position.x
+
+	var climbed: bool = absf(c.global_position.y - (REST_Y + 0.2)) < EPS
+	_check(
+		"41 a step does not lurch the body forward",
+		climbed and worst <= ceiling,
+		(
+			"climbed=%s worst frame advanced %.4f m against %.4f expected, ceiling %.4f"
+			% [climbed, worst, per_frame, ceiling]
+			+ " - the step frame seated the horizontal move_and_slide was going to cover"
 		),
 	)
 	world.queue_free()

@@ -86,6 +86,34 @@ const _HORIZONTAL: Vector3 = Vector3(1, 0, 1)
 # a margin is worth warning about.
 const _DEFAULT_MARGIN: float = 0.01
 
+# Floor under the forward leg of the step check, in metres.
+#
+# Every distance in stair_step_up comes from velocity * delta, so the whole check
+# shrinks with the tick rate. The failure is not a near miss but a permanent
+# stall: once move_and_slide has parked the body a probe length short of a step,
+# the probe reaches the face and leaves a remainder of nothing, the forward sweep
+# below moves that nothing, and the margin bail rejects it - on every frame after,
+# because the body never moves again. Measured on 4.8.dev (test/diag_tickrate.gd)
+# a 3 m/s walk into a 0.2 m step stalls at 240 Hz and a 0.5 m/s one at 240 and
+# 480, while 60 Hz clears every speed.
+#
+# Jolt carries the same floor for the same reason - CharacterVirtual's
+# mWalkStairsMinStepForward, also 0.02, commented "at very high frame rates the
+# delta time may be very small, causing a very small step forward".
+#
+# It only ever lengthens a probe, never the committed movement: the common path
+# commits Y alone and leaves the horizontal to move_and_slide. Two cases commit
+# the probed horizontal too and so can seat the body up to this far onto the step
+# - a standstill, and a frame whose whole reach is shorter than this. Both are
+# spelled out at the commit site, and both are cases that are stuck otherwise.
+const _MIN_STEP_FORWARD: float = 0.02
+
+# Bounded (NASA rule 2) slide iterations for the forward leg. Walking head-on
+# into a wall slides to zero on the first try and breaks out, so the ordinary
+# blocked case still costs one sweep; only motion that survives a slide pays for
+# more.
+const _FORWARD_SLIDE_ITERATIONS: int = 4
+
 # Below this the residual offset is close enough to home to snap and stop, rather
 # than chase an exponential tail that never quite reaches zero.
 const _SMOOTH_EPSILON: float = 0.0001
@@ -482,13 +510,56 @@ func stair_step_up() -> void:
 	if step_up_distance < _params.margin:
 		return
 
-	# Move forward remaining distance
-	_params.from = motion_transform
-	_params.motion = remainder
-	PhysicsServer3D.body_test_motion(get_rid(), _params, _result)
-	var forward_travel: Vector3 = _result.get_travel()
+	# Move forward remaining distance, sliding along anything it meets on the way.
+	#
+	# A single sweep that stops at its first contact cannot climb a staircase with
+	# a wall beside it: hold a diagonal into the wall and the wall, not the step,
+	# is what the first sweep hits, so the remainder still points into it and this
+	# leg travels nothing. Measured on 4.8.dev (test/diag_wallhug.gd) the character
+	# is pinned at the foot of the first step for as long as the push is held,
+	# while the same walk one push away from the wall climbs. Sliding the leftover
+	# motion along the contact normal and sweeping again turns the diagonal into
+	# the along-the-wall component, which is the direction the stairs run in.
+	#
+	# Kept horizontal so a sloped contact cannot tilt the leg into a rise or a
+	# dive: this leg advances the body over the lip, and the height it may gain
+	# was already decided and clamped by the raise above.
+	#
+	# Both reference implementations iterate here for the same reason - Jolt's
+	# WalkStairs moves the shape rather than sweeping once, and dresswithpockets'
+	# write-up wraps its sweeps in an explicit slide loop.
+	var forward_motion: Vector3 = remainder
+	if forward_motion.length() < _MIN_STEP_FORWARD:
+		forward_motion = testing_velocity.normalized() * _MIN_STEP_FORWARD
+
+	# Whether this frame can cover the ground the probe is about to, which decides
+	# who owns the horizontal at the commit below.
+	#
+	# Deliberately keyed off the whole frame's reach rather than off "was the leg
+	# clamped": the leftover is short on any frame that ends up near a face, so
+	# clamping is common at every tick rate, while move_and_slide falls short of
+	# the probe only when the frame's entire travel is under the minimum. Keying
+	# off the clamp instead was measured seating the body on ordinary 60 Hz walking
+	# frames, where move_and_slide then adds its full share on top: a 0.05 m frame
+	# advanced 0.12 m on the step, a visible burst on the one frame that should
+	# look like every other.
+	var probe_outruns_the_frame: bool = distance.length() < _MIN_STEP_FORWARD
+
+	var forward_travel: Vector3 = Vector3.ZERO
+	for _i: int in _FORWARD_SLIDE_ITERATIONS:
+		_params.from = motion_transform
+		_params.motion = forward_motion
+		var blocked: bool = PhysicsServer3D.body_test_motion(get_rid(), _params, _result)
+		var leg: Vector3 = _result.get_travel()
+		motion_transform = motion_transform.translated(leg)
+		forward_travel += leg
+		if not blocked:
+			break
+		forward_motion = _result.get_remainder().slide(_result.get_collision_normal(0)) * _HORIZONTAL
+		if forward_motion.length() < _params.margin:
+			break
+
 	var forward_distance: float = forward_travel.length()
-	motion_transform = motion_transform.translated(forward_travel)
 
 	# Raising the body did not get it past the obstacle, so whatever we walked
 	# into is taller than step_height and there is no ledge to come down onto.
@@ -531,22 +602,47 @@ func stair_step_up() -> void:
 	if surface_normal.angle_to(Vector3.UP) > floor_max_angle:
 		return #Can't stand on the thing we're trying to step on anyway
 
+	# A step that ends no higher than it started is not a step. The sweeps can
+	# reach here having risen, travelled forward and come straight back down onto
+	# the floor they left - a lip too shallow to land on, or a forward leg that
+	# never cleared the face - and committing that writes the same Y back while
+	# the seat below still plants the body forward into the obstacle, which then
+	# blocks it there for good.
+	#
+	# Jolt makes the same check last, for the same reason: "If we don't gain any
+	# height compared to our contact then the stair walk is pointless."
+	#
+	# Reached rather than theorised. The minimum forward leg is what exposed it:
+	# before that, a frame with nothing left to travel turned back at the margin
+	# bail on the forward sweep instead of arriving here with a flat result.
+	if motion_transform.origin.y - global_position.y < _params.margin:
+		return
+
 	# Move player to match the step height we just found. Only the Y is committed
 	# in the common case: move_and_slide runs right after and owns the horizontal,
 	# carrying the raised body forward over the lip using velocity. Committing X/Z
 	# here as well would double that frame's forward motion.
 	#
-	# But when the step was found on intent rather than velocity (carried_by_velocity
-	# false - a standstill against the face, see the probe above), there is no
-	# velocity for move_and_slide to carry with. Y alone leaves the body floating at
-	# step height with its footprint still behind the lip; unsupported, it drops
-	# straight back the next frame and the character is stuck pressing forward
-	# forever. So seat the horizontal too, planting the body on the step the probe
-	# located. This is the one case the double-move worry does not apply to, because
-	# the velocity that would double it is the velocity that is missing.
+	# Two cases have to seat the horizontal as well, and both are cases where
+	# move_and_slide will not cover the ground the probe just did:
+	#
+	#   - The step was found on intent rather than velocity (carried_by_velocity
+	#     false - a standstill against the face, see the probe above). There is no
+	#     velocity for move_and_slide to carry with, so Y alone leaves the body
+	#     floating at step height with its footprint still behind the lip;
+	#     unsupported, it drops straight back next frame and the character is stuck
+	#     pressing forward forever.
+	#   - The frame's whole reach is shorter than _MIN_STEP_FORWARD, so the forward
+	#     leg probed further ahead than move_and_slide will travel. Y alone then
+	#     lands the body short of the lip and the snap-down puts it right back.
+	#     Measured: at 60 Hz and 1 m/s this is the difference between climbing a
+	#     0.2 m step and being pinned at its face for good.
+	#
+	# Neither doubles the frame's motion, because in both the horizontal the probe
+	# used is the horizontal move_and_slide is about to not have.
 	var pre_step_y: float = global_position.y
 	global_position.y = motion_transform.origin.y
-	if not carried_by_velocity:
+	if not carried_by_velocity or probe_outruns_the_frame:
 		global_position.x = motion_transform.origin.x
 		global_position.z = motion_transform.origin.z
 	_accumulate_step_smoothing(global_position.y - pre_step_y)
