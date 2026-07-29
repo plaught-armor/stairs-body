@@ -603,11 +603,38 @@ func stair_step_up() -> void:
 	if testing_velocity == Vector3.ZERO:
 		return
 
-	# This variable gets reused for all the following checks
-	var motion_transform: Transform3D = global_transform
-
 	# If you use this function you don't need to pass delta everywhere :D
-	var distance: Vector3 = testing_velocity * get_physics_process_delta_time()
+	var delta: float = get_physics_process_delta_time()
+	var distance: Vector3 = testing_velocity * delta
+
+	# Where the floor is about to carry the body, which is where the sweeps have to
+	# start from when that floor is moving.
+	#
+	# This runs before move_and_slide, and move_and_slide is what re-seats the body
+	# on a moving platform - it applies the floor's velocity before it looks at the
+	# character's own. So at this moment the body is still standing where the last
+	# frame left it while the platform has moved on, and every sweep below measures
+	# from a position one platform-frame stale. On a staircase bolted to a moving
+	# platform that inflates the gap to the next step by exactly the platform's
+	# travel: measured (test/diag_platform_probe.gd) a 5 m/s platform put the step
+	# face 0.0919 m away when the probe was 0.05 m, so the sweep missed on that
+	# frame and on every frame after, and the character never climbed.
+	#
+	# Offsetting the start by the same displacement move_and_slide is about to apply
+	# puts the sweep where the body will actually be. Co-moving geometry stays
+	# consistent, which is what makes this different from lengthening the probe:
+	# the step moved with the platform too, so the offset cancels and a character
+	# standing still on a moving platform still finds nothing to climb.
+	#
+	# Horizontal only. A lift's vertical carry would ride straight into the
+	# committed step height at the end of this function and double the rise, and
+	# vertical platforms fail for a different reason that is not yet understood -
+	# see the note in test/diag_platform_stairs.gd. Static floors report zero here,
+	# so nothing about ordinary geometry changes.
+	var platform_carry: Vector3 = get_platform_velocity() * _HORIZONTAL * delta
+
+	# This variable gets reused for all the following checks
+	var motion_transform: Transform3D = global_transform.translated(platform_carry)
 	_params.from = motion_transform
 	_params.motion = distance
 
@@ -791,8 +818,12 @@ func stair_step_up() -> void:
 	var pre_step_y: float = global_position.y
 	global_position.y = motion_transform.origin.y
 	if not carried_by_velocity or probe_outruns_the_frame:
-		global_position.x = motion_transform.origin.x
-		global_position.z = motion_transform.origin.z
+		# Minus the platform carry, because move_and_slide is still going to apply
+		# that displacement itself. The sweeps needed it to look in the right place;
+		# committing it here as well would ride the platform twice, which is the same
+		# double-push _move_split had to suppress.
+		global_position.x = motion_transform.origin.x - platform_carry.x
+		global_position.z = motion_transform.origin.z - platform_carry.z
 	_accumulate_step_smoothing(global_position.y - pre_step_y)
 
 	stepped_up.emit()

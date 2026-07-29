@@ -24,43 +24,32 @@ extends Node3D
 ## Heights are reported RELATIVE to the platform, because the absolute number
 ## moves with the platform and says nothing about whether the character climbed.
 ##
-## RESULT: mostly it works, and there is a speed past which it stops.
+## RESULT: fixed for horizontal platforms, still open for a descending lift.
 ##
-##     sliding staircase   0.0  climbed   2.0  climbed   5.0  STUCK   -2.0  climbed
-##     staircase on a lift 0.0  climbed  +1.0  climbed  -1.0  STUCK
-##     boarding a platform 0.0  climbed  -2.0  climbed  -5.0  climbed
+##     sliding staircase   0, 2, 5, 10, 20 and -2, -10 m/s   all climbed
+##     staircase on a lift 0 climbed  +1 climbed  -1 STUCK
+##     boarding a platform 0, -2, -5 m/s                     all climbed
 ##
-## Both failures are the same shape, and it is the shape this repo already knows:
-## the character parks against the first step face - relative x pins at 0.691 and
-## 0.699, a hair under the 0.700 contact point - stays grounded every frame, and
-## never rises. Instrumented, every frame of the stall bails at `sweep1-miss`: the
-## first sweep, aimed along a healthy 0.05 m probe from 9 mm away, reports no
-## collision at all.
+## Before the fix the sliding family stalled from 5 m/s up: the character parked
+## against the first step face, stayed grounded every frame, and never rose, with
+## every frame bailing at sweep1-miss on a healthy 0.05 m probe.
 ##
-## What is established:
+## The cause, pinned in test/diag_platform_probe.gd rather than argued: the step
+## check runs BEFORE move_and_slide, and move_and_slide is what re-seats the body
+## on a moving floor. So the sweeps measured from where the body stood before the
+## floor carried it, and the gap to the step face was inflated by exactly the
+## platform travel - 0.0919 m against a 0.05 m probe at 5 m/s. The sweep itself was
+## never at fault; called from outside the frame at that same position it hit
+## cleanly. stair_step_up now starts its sweeps offset by the displacement
+## move_and_slide is about to apply, which is why 20 m/s climbs now.
 ##
-##   - It is not the probe input. velocity is (3, 0, 0) and intent matches, so
-##     carried_by_velocity is true and testing_velocity is the full walk - the
-##     backpressure guard is not misfiring.
-##   - Probe LENGTH is what clears the sliding case. Holding the platform at
-##     5 m/s and raising the walk: 3 m/s stuck, 5 m/s stuck, 8 m/s climbs part of
-##     the flight. So the sweep needs to span something bigger than the gap it can
-##     see, and the platform's own displacement is the something.
-##   - It is NOT the order the platform is moved in. Moving the platform before
-##     the physics frame rather than after changes nothing, so this is not the
-##     obvious one-frame staleness in the harness.
-##   - The lift case does not clear at any walk speed tried, so it is not the same
-##     mechanism as the slide, or not only that.
-##
-## What is NOT established: why the sweep misses. A sweep from 9 mm away along
-## 50 mm should hit whatever the platform is doing, and it does not. Until that is
-## understood there is no fix here worth writing - the candidates (folding platform
-## velocity into the probe, sweeping in platform space) are guesses, and this repo
-## does not ship guesses. The limitation is real, reproducible and bounded:
-## stairs on a platform moving under about 2 m/s are fine, and a lift carrying
-## stairs downward is not.
+## The lift is NOT the same mechanism and is not fixed. A descending lift parks the
+## character at relative x 0.699 - touching the face, not short of it - and the
+## horizontal carry is zero there by construction, so nothing in the fix applies.
+## It wants the same treatment this one got: reproduce it in the probe harness and
+## find out what the sweep actually sees before writing anything.
 
-var _slides: PackedFloat32Array = [0.0, 2.0, 5.0, -2.0]
+var _slides: PackedFloat32Array = [0.0, 2.0, 5.0, 10.0, 20.0, -2.0, -10.0]
 var _lifts: PackedFloat32Array = [0.0, 1.0, -1.0]
 ## Only non-positive for boarding: a platform pulling away from the ground opens
 ## a gap the character falls into, which is correct physics and a useless test.

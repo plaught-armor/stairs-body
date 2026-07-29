@@ -96,6 +96,7 @@ func _run_all() -> void:
 	await _case_45_a_zero_forward_floor_is_the_old_unfloored_leg()
 	await _case_46_split_move_steps_up_and_snaps_down()
 	await _case_47_split_move_rides_a_platform_once()
+	await _case_48_climbs_stairs_that_ride_a_moving_platform()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -1882,3 +1883,70 @@ func _case_47_split_move_rides_a_platform_once() -> void:
 		),
 	)
 	world.queue_free()
+
+
+## Stairs bolted to a moving platform. The check runs before move_and_slide, and
+## move_and_slide is what re-seats the body on a moving floor, so the sweeps used
+## to measure from a position one platform-frame stale - the step face sat further
+## away than the probe could reach, on that frame and every frame after.
+##
+## 5 m/s against a 3 m/s walk is past the old ceiling: measured before the fix the
+## character parked at the first step and never rose, while 2 m/s climbed fine.
+## test/diag_platform_stairs.gd carries the wider grid, out to 20 m/s either way.
+func _case_48_climbs_stairs_that_ride_a_moving_platform() -> void:
+	const PLATFORM_SPEED: float = 5.0
+	const RISE: float = 0.2
+	const TREADS: int = 3
+
+	var world: Node3D = _new_world()
+	var platform: AnimatableBody3D = AnimatableBody3D.new()
+	_platform_box(platform, Vector3(40.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	for i: int in TREADS:
+		# Each tread runs to the end of the flight, so the stack is a staircase
+		# rather than a row of separate blocks.
+		var length: float = 1.0 * float(TREADS - i) + 8.0
+		_platform_box(
+			platform,
+			Vector3(length, 2.0, 8.0),
+			Vector3(1.0 + 1.0 * float(i) + length * 0.5, RISE * float(i + 1) - 1.0, 0.0),
+		)
+	world.add_child(platform)
+	platform.global_position = Vector3.ZERO
+
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+
+	var start_gap: float = c.global_position.y - platform.global_position.y
+	for _i: int in WALK_FRAMES:
+		await get_tree().physics_frame
+		platform.global_position.x += PLATFORM_SPEED * DELTA
+		c.velocity.x = WALK_SPEED
+		c.velocity.y -= GRAVITY * DELTA
+		c.desired_velocity = Vector3(WALK_SPEED, 0.0, 0.0)
+		c.move_and_stair_step()
+
+	# Height relative to the platform: the absolute number rides along with it and
+	# says nothing about whether the character climbed.
+	var gained: float = (c.global_position.y - platform.global_position.y) - start_gap
+	var full_climb: float = RISE * float(TREADS)
+	_check(
+		"48 climbs stairs that ride a moving platform",
+		absf(gained - full_climb) < EPS,
+		(
+			"gained %.2f m on a platform moving %.1f m/s, expected %.2f - the sweeps"
+			% [gained, PLATFORM_SPEED, full_climb]
+			+ " are measuring from where the body was before the floor carried it"
+		),
+	)
+	world.queue_free()
+
+
+## A box on a body that is not the world - the platform owns its own shapes, so
+## the whole flight moves together.
+func _platform_box(body: PhysicsBody3D, size: Vector3, centre: Vector3) -> void:
+	var shape_node: CollisionShape3D = CollisionShape3D.new()
+	var box: BoxShape3D = BoxShape3D.new()
+	box.size = size
+	shape_node.shape = box
+	shape_node.position = centre
+	body.add_child(shape_node)
