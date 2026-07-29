@@ -12,9 +12,9 @@ stepping algorithm is Andrea Jörgensen's and is unchanged in substance — ever
 sweep it runs, it ran there first. What the fork adds is around it, and is listed
 below.
 
-Measured on `4.6-stable`, `4.7-stable` and `4.8.dev` with **Godot Physics** and a
-`CylinderShape3D`, which is what the 51-case suite runs against. Jolt is close but
-not identical — see [Physics engines](#physics-engines).
+Measured on `4.6-stable`, `4.7-stable` and `4.8.dev` with a `CylinderShape3D`, and
+run under **both** Godot Physics and Jolt — 53 cases, one of which Jolt still fails
+for a reason that is not about stairs. See [Physics engines](#physics-engines).
 
 ## What this fork changes
 
@@ -50,7 +50,7 @@ Around the behaviour:
 - The two query objects are allocated once and reused, not four per character per
   frame.
 - Static typing throughout, and a headless test suite the original did not have —
-  51 cases, plus the benchmarks and diagnostics behind every number in this file.
+  53 cases, plus the benchmarks and diagnostics behind every number in this file.
 
 ## Install
 
@@ -189,6 +189,15 @@ walk stalled at 240 and 480; 60 Hz cleared every speed, which is why this went
 unnoticed for so long. `test/diag_tickrate.gd` walks the whole rate x speed grid
 if you want to see it.
 
+The floor applies to the **first** sweep as well as the forward leg, and that half
+of it was found under Jolt. Whether the probe reaches the step face at all depends
+on where the engine parks a body that has walked into one: Godot Physics rests it
+flush, so even a millimetre of probe touches, while Jolt leaves a gap. Measured
+(`test/diag_jolt_stall.gd`) a 0.5 m/s walk at 120 Hz came to rest 4.2 mm from a
+step with a 4.17 mm probe - missing by three hundredths of a millimetre, on that
+frame and every frame after. Flooring the first sweep too clears the whole grid on
+both engines.
+
 It only ever lengthens a *probe*. The body still moves as far as its velocity
 carries it, except on frames whose entire reach is shorter than the floor - where
 the addon seats the body itself, because `move_and_slide` cannot cover ground the
@@ -246,7 +255,10 @@ stopping, accelerating, reversing. Each is a single frame the next observation
 corrects. Reversing is the worst of them, and it was measured rather than left as
 a worry: a lift flipping between +1 and -1 m/s every 1, 2, 5 and 20 frames climbs
 the full flight at all four periods, though contact suffers - the grounded
-fraction falls to 0.36 when it reverses every frame or two.
+fraction falls to 0.36 when it reverses every frame or two. Under Jolt the same
+grid climbs except the every-single-frame flip, which is where an approximation
+built on last frame's observation is wrong on every frame by construction; two
+frames a direction is enough for it.
 
 The other is that the carry only applies while grounded, so a `force_stair_step`
 ledge catch in mid-air one frame after jumping off a platform is not offset by a
@@ -341,7 +353,14 @@ to get the behaviour it advertised.
 The suite runs against **Godot Physics**, which is the project default, and passes
 on `4.6-stable`, `4.7-stable` and `4.8.dev`.
 
-Under **Jolt** on 4.8.dev, 50 of the 51 cases pass, and Jolt costs more: 55.9 us
+Jolt is a first-class target here rather than an afterthought, because it is where
+Godot is heading. The suite and the diagnostics are run under both engines, and one
+of the two differences that turned up was a real bug rather than a curiosity: a
+slow walk at a high tick rate stalled against a step under Jolt, because the first
+sweep was fractionally shorter than the gap Jolt leaves at rest. That is fixed -
+see [Tick rate](#tick-rate) - and case 52 pins it.
+
+Under **Jolt** on 4.8.dev, 52 of the 53 cases pass, and Jolt costs more: 55.9 us
 per character per frame against 47.9 for the same combined move.
 
 The failing case is 19, a walkable 30 degree ramp, and the disagreement is about
@@ -385,7 +404,7 @@ is the whole of what is known.
 
     test/run.sh
 
-Runs a headless suite of 51 cases that builds each world procedurally and exits
+Runs a headless suite of 53 cases that builds each world procedurally and exits
 with the number of failures. Nothing in `test/` ships with the addon; it is all
 development material for this repository.
 
@@ -409,7 +428,7 @@ the reasoning survives without rerunning anything:
 | `diag_reuse.gd`, `diag_slide.gd`, `diag_latency.gd` | Whether the check can be cached or deferred (it cannot, without costing stairs) |
 | `diag_phase2.gd`, `diag_sink_robustness.gd`, `diag_steep_landing.gd` | Whether the four-phase algorithm can lose a phase (it cannot) |
 | `diag_steepedge.gd` | Whether Jolt's steep-edge retry is worth carrying here (it is not - the record of a feature written, measured and removed) |
-| `diag_jolt_ramp.gd` | Why a walkable ramp reports a step under Jolt and not under Godot Physics - the two engines' answers for the same corner, and the two mitigations that had nothing to work with |
+| `diag_jolt_ramp.gd`, `diag_jolt_stall.gd` | The two places the engines disagree - what each answers for the same ramp corner, and where each parks a body that has walked into a step face |
 
 Several of these exist to record a **negative** result. If you are about to try
 one of these optimisations, read the relevant header first — the measurement is

@@ -100,6 +100,8 @@ func _run_all() -> void:
 	await _case_49_seats_the_horizontal_once_on_a_moving_platform()
 	await _case_50_climbs_stairs_on_a_descending_lift()
 	await _case_51_climbs_stairs_on_a_diagonal_platform()
+	await _case_52_a_slow_walk_reaches_the_face_at_a_high_tick_rate()
+	await _case_53_a_slow_walk_does_not_lurch_when_it_seats()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -2020,6 +2022,120 @@ func _case_49_seats_the_horizontal_once_on_a_moving_platform() -> void:
 			"gained %.2f m (expected %.2f), worst frame advanced %.4f m against the"
 			% [gained, RISE, worst_gain]
 			+ " platform, ceiling %.4f - the seat is committing the carry twice" % ceiling
+		),
+	)
+	world.queue_free()
+
+
+## Case 40 pins the forward leg's floor at a high tick rate. This pins the FIRST
+## sweep's, which is a different stall with the same shape and was found under Jolt
+## rather than reasoned about: the check can only start if the probe reaches the
+## step face, and a slow walk at a high rate probes a few millimetres.
+##
+## Whether that is enough depends on where the engine parks a body that has walked
+## into a wall, and the engines differ. Godot Physics rests it flush, so even a
+## 1 mm probe touches. Jolt leaves a gap - measured 4.2 mm against a 4.17 mm probe
+## at 0.5 m/s and 120 Hz (test/diag_jolt_stall.gd), so the sweep missed by three
+## hundredths of a millimetre, on that frame and on every frame after, and the
+## character stood at the step pushing forever.
+##
+## 0.5 m/s at 120 Hz is that measured cell. It passed under Godot Physics before the
+## floor reached the first sweep, so this case only ever failed under Jolt - which
+## is the reason to keep running the suite under both.
+func _case_52_a_slow_walk_reaches_the_face_at_a_high_tick_rate() -> void:
+	const RATE: int = 120
+	const CRAWL: float = 0.5
+	const RISE: float = 0.2
+
+	var original_rate: int = Engine.physics_ticks_per_second
+	Engine.physics_ticks_per_second = RATE
+	var delta: float = 1.0 / float(RATE)
+
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, RISE)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+
+	for _i: int in SETTLE_FRAMES * 2:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * delta
+		c.move_and_stair_step()
+
+	# Long enough for a 0.5 m/s crawl to cover the approach twice over at this rate,
+	# so a failure is a stall rather than a walk that ran out of time.
+	for _i: int in RATE * 3:
+		await get_tree().physics_frame
+		c.velocity.x = CRAWL
+		c.velocity.y -= GRAVITY * delta
+		c.desired_velocity = Vector3(CRAWL, 0.0, 0.0)
+		c.move_and_stair_step()
+
+	var climbed: bool = absf(c.global_position.y - (REST_Y + RISE)) < EPS
+	Engine.physics_ticks_per_second = original_rate
+	_check(
+		"52 a slow walk reaches the step face at a high tick rate",
+		climbed,
+		(
+			"pos=%v at %.1f m/s and %d Hz, expected y~%.2f - the first sweep is"
+			% [c.global_position, CRAWL, RATE, REST_Y + RISE]
+			+ " shorter than the gap the engine leaves, so the check never starts"
+		),
+	)
+	world.queue_free()
+
+
+## Case 41 pins the ceiling over a step-up frame at a walking pace, where the addon
+## never seats the horizontal itself. This pins it on the path case 52 opened, which
+## is the one where it always does.
+##
+## Both probes are floored on such a frame - the first sweep and the forward leg -
+## so the seat plants the body by up to about two floors' worth, and the measured
+## worst frame is 0.0401 m against a frame reach of 0.0042. That is the honest cost
+## of not being stuck, and it is what this case allows.
+##
+## The ceiling is 2.5 floors rather than the measured value, because the number to
+## catch is not "a little over 2" but the shapes that break the bound: a seat that
+## repeats across the slide iterations, or one that commits the probe and then lets
+## move_and_slide add its share again. Those land at 4 floors and up.
+func _case_53_a_slow_walk_does_not_lurch_when_it_seats() -> void:
+	const RATE: int = 120
+	const CRAWL: float = 0.5
+	const RISE: float = 0.2
+
+	var original_rate: int = Engine.physics_ticks_per_second
+	Engine.physics_ticks_per_second = RATE
+	var delta: float = 1.0 / float(RATE)
+
+	var world: Node3D = _new_world()
+	_add_ground(world, 1.0)
+	_add_step(world, RISE)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+
+	for _i: int in SETTLE_FRAMES * 2:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * delta
+		c.move_and_stair_step()
+
+	var worst_advance: float = 0.0
+	for _i: int in RATE * 3:
+		await get_tree().physics_frame
+		c.velocity.x = CRAWL
+		c.velocity.y -= GRAVITY * delta
+		c.desired_velocity = Vector3(CRAWL, 0.0, 0.0)
+		var before_x: float = c.global_position.x
+		c.move_and_stair_step()
+		worst_advance = maxf(worst_advance, c.global_position.x - before_x)
+
+	var ceiling: float = c.min_step_forward * 2.5
+	var climbed: bool = absf(c.global_position.y - (REST_Y + RISE)) < EPS
+	Engine.physics_ticks_per_second = original_rate
+	_check(
+		"53 a slow walk does not lurch on the frame it seats",
+		climbed and worst_advance <= ceiling,
+		(
+			"climbed=%s, worst frame advanced %.4f m against a %.4f m reach, ceiling"
+			% [climbed, worst_advance, CRAWL * delta]
+			+ " %.4f - the seat is committing more than the two floors it probes" % ceiling
 		),
 	)
 	world.queue_free()

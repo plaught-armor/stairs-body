@@ -160,9 +160,16 @@ const _DEFAULT_MARGIN: float = 0.01
 #
 # It only ever lengthens a probe, never the committed movement: the common path
 # commits Y alone and leaves the horizontal to move_and_slide. Two cases commit
-# the probed horizontal too and so can seat the body up to this far onto the step
-# - a standstill, and a frame whose whole reach is shorter than this. Both are
-# spelled out at the commit site, and both are cases that are stuck otherwise.
+# the probed horizontal too - a standstill, and a frame whose whole reach is
+# shorter than this. Both are spelled out at the commit site, and both are cases
+# that are stuck otherwise.
+#
+# On such a frame BOTH probes are floored, the first sweep and the forward leg, so
+# the seat plants the body by up to about two of these rather than one: measured
+# 0.0401 m at 0.5 m/s and 120 Hz, against that frame's own reach of 0.0042 m. Case
+# 53 holds that bound, because the shapes that break it - a seat repeating across
+# the slide iterations, or one that commits and then lets move_and_slide add its
+# share again - land at four and up.
 const _MIN_STEP_FORWARD: float = 0.02
 
 # Bounded (NASA rule 2) slide iterations for the forward leg. Walking head-on
@@ -605,7 +612,46 @@ func stair_step_up() -> void:
 
 	# If you use this function you don't need to pass delta everywhere :D
 	var delta: float = get_physics_process_delta_time()
-	var distance: Vector3 = testing_velocity * delta
+	var frame_reach: Vector3 = testing_velocity * delta
+
+	# Whether this frame can cover the ground the probe is about to, which decides
+	# who owns the horizontal at the commit below. Read from the frame's own reach,
+	# before the floor below lengthens it - the whole point of the question is
+	# whether move_and_slide will travel as far as the probe does.
+	#
+	# Deliberately keyed off the whole frame's reach rather than off "was the leg
+	# clamped": the leftover is short on any frame that ends up near a face, so
+	# clamping is common at every tick rate, while move_and_slide falls short of
+	# the probe only when the frame's entire travel is under the minimum. Keying
+	# off the clamp instead was measured seating the body on ordinary 60 Hz walking
+	# frames, where move_and_slide then adds its full share on top: a 0.05 m frame
+	# advanced 0.12 m on the step, a visible burst on the one frame that should
+	# look like every other.
+	var probe_outruns_the_frame: bool = frame_reach.length() < min_step_forward
+
+	# The same floor the forward leg gets, applied to the first sweep as well,
+	# because a probe that cannot reach the step face is a check that never starts.
+	#
+	# The floor was written for the forward leg and left the first sweep alone,
+	# which was enough while the body came to rest against a face. It does not under
+	# Jolt, which parks it a few millimetres off: measured (test/diag_jolt_stall.gd)
+	# a 0.5 m/s walk at 120 Hz stopped 4.2 mm short of a step with a 4.17 mm probe,
+	# so the sweep missed by 0.03 mm on that frame and on every frame after, and the
+	# character stood there pushing. Godot Physics rests flush and the same probe
+	# hits, which is why the whole rate x speed grid was clean there and one cell of
+	# it stalled under Jolt.
+	#
+	# Rate independent, so it covers the class rather than that cell: at any tick
+	# rate the first sweep now reaches at least min_step_forward, which is 20 mm
+	# against the few millimetres either engine leaves. Frames that already reach
+	# further are untouched - at 60 Hz a 3 m/s walk probes 50 mm and never sees this.
+	#
+	# Nothing here commits movement. The probe decides where to look; the commit
+	# below still asks who owns the horizontal, and probe_outruns_the_frame above is
+	# what tells it that move_and_slide will not cover this ground.
+	var distance: Vector3 = frame_reach
+	if probe_outruns_the_frame:
+		distance = testing_velocity.normalized() * min_step_forward
 
 	# Where the floor is about to carry the body, which is where the sweeps have to
 	# start from when that floor is moving.
@@ -745,19 +791,6 @@ func stair_step_up() -> void:
 	var forward_motion: Vector3 = remainder
 	if forward_motion.length() < min_step_forward:
 		forward_motion = testing_velocity.normalized() * min_step_forward
-
-	# Whether this frame can cover the ground the probe is about to, which decides
-	# who owns the horizontal at the commit below.
-	#
-	# Deliberately keyed off the whole frame's reach rather than off "was the leg
-	# clamped": the leftover is short on any frame that ends up near a face, so
-	# clamping is common at every tick rate, while move_and_slide falls short of
-	# the probe only when the frame's entire travel is under the minimum. Keying
-	# off the clamp instead was measured seating the body on ordinary 60 Hz walking
-	# frames, where move_and_slide then adds its full share on top: a 0.05 m frame
-	# advanced 0.12 m on the step, a visible burst on the one frame that should
-	# look like every other.
-	var probe_outruns_the_frame: bool = distance.length() < min_step_forward
 
 	var forward_travel: Vector3 = Vector3.ZERO
 	for _i: int in step_slide_iterations:
