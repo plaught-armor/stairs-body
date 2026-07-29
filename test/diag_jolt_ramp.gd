@@ -53,7 +53,28 @@ extends Node3D
 ## 0.364 slope and the same 6.49 m advanced under both, and the divergence is one
 ## `stepped_up` signal - a footstep sound on a slope.
 ##
-## Two fixes were tried here and neither has anything to work with:
+## THE PART THAT MATTERS, and it took a fourth experiment to find: that step is not
+## spurious under Jolt. It is the mechanism.
+##
+##     a plain CharacterBody3D, no stair stepping at all, same ramp
+##       Godot Physics  climbs to y 2.543
+##       Jolt           STUCK at x 0.583, y 0.900 - never gets onto the ramp
+##
+## Jolt's solver reads that corner as too steep to walk, the same way its motion
+## query reports it, so move_and_slide will not carry a character onto the slope.
+## The stair step at the corner is what does. Suppress it and the character is
+## stranded at the foot of every ramp - which is exactly what happened when it was
+## tried: case 20's character, walking a ramp with a step at the top of it, stopped
+## dead at x 0.705 and climbed nothing.
+##
+## So the bail's premise - "a walkable surface is move_and_slide's job" - is an
+## engine-dependent claim, and case 19 was written against the engine where it
+## holds. It now asserts the property that is true on both: the character climbs,
+## and does not stair-step its WAY up the slope. Zero steps is what Godot Physics
+## does, one is what an ambiguous corner costs, and 77 is what removing the walkable
+## bail does - so a ceiling of one keeps the case's teeth.
+##
+## Four things were tried against this, and they are worth knowing before a fifth:
 ##
 ##   - Raising max_collisions to look for a walkable contact behind the steep one.
 ##     Jolt reports ONE contact at the corner however high the cap goes. (Godot
@@ -63,11 +84,15 @@ extends Node3D
 ##   - Jolt's enhanced internal edge removal, which is already on by default for
 ##     motion queries. Toggling it changes nothing, because this is an external
 ##     corner and internal-edge removal is for the seams inside one body.
-##
-## So this is recorded rather than worked around. Suppressing it would mean paying
-## on every frame, on both engines, to silence one signal that moves the character
-## 3 mm - and the addon has no way to tell a ramp's corner from a step's face from
-## a single normal, which is the only thing either engine gives it.
+##   - The slope allowance: bail when the height gained is no more than walking the
+##     landing surface forward would have gained. Priced below - the ramp gains
+##     +0.0130 against an allowance of 0.0115, so it is on the wrong side by 13%,
+##     and only a fudge factor separates it from a real step's +0.1986
+##     against 0.0077.
+##   - The raised re-sweep: ask again from a few millimetres up, where a corner is
+##     no longer ambiguous. This one WORKS as a classifier - the ramp reads its face
+##     at 5 mm and a step's riser reads 90 at every lift - and it is still wrong,
+##     because what it classifies correctly is a step that has to happen anyway.
 
 const WALK: float = 3.0
 
@@ -111,6 +136,10 @@ var _delta: float = 1.0 / float(Engine.physics_ticks_per_second)
 ## across the range is the engines disagreeing about corners generally.
 var _ramps: PackedFloat32Array = [CASE_19_TILT, 10.0, 20.0, 40.0]
 
+## Packed rather than bare Array literals, which would allocate per call (S6).
+var _corner_lifts: PackedFloat32Array = [0.005, 0.01, 0.02]
+var _collision_caps: PackedInt32Array = [1, 4]
+
 var _params: PhysicsTestMotionParameters3D = PhysicsTestMotionParameters3D.new()
 var _result: PhysicsTestMotionResult3D = PhysicsTestMotionResult3D.new()
 
@@ -137,6 +166,12 @@ func _run() -> void:
 	# also reports a walkable contact once max_collisions is raised, then reading a
 	# walkable contact is not a ramp test and there is nothing here to use.
 	await _walk_the_ramp(-1.0)
+	# And the control that decides whether the step is a NUISANCE or the mechanism.
+	# The bail hands a walkable ramp to move_and_slide on the grounds that
+	# move_and_slide will walk it. A plain CharacterBody3D with no stair stepping at
+	# all is that claim, tested: if it climbs, the step at the corner is spurious and
+	# worth suppressing; if it stalls, the step is what gets the character up.
+	await _walk_without_stair_stepping(CASE_19_TILT)
 	get_tree().quit(0)
 
 
@@ -228,6 +263,7 @@ func _walk_the_ramp(degrees: float) -> void:
 				)
 			)
 			_report_every_contact(c, before, walkable_limit)
+			_report_the_rest_of_the_chain(c, before, walkable_limit)
 
 		c.move_and_stair_step()
 
@@ -254,7 +290,7 @@ func _walk_the_ramp(degrees: float) -> void:
 ## equally fresh objects, so the only variable between them is max_collisions
 ## itself - which is the claim being made.
 func _report_every_contact(c: StairsCharacter, from: Transform3D, walkable_limit: float) -> void:
-	for cap: int in [1, 4]:
+	for cap: int in _collision_caps:
 		var params: PhysicsTestMotionParameters3D = PhysicsTestMotionParameters3D.new()
 		params.margin = COLLIDER_MARGIN
 		params.max_collisions = cap
@@ -283,6 +319,123 @@ func _report_every_contact(c: StairsCharacter, from: Transform3D, walkable_limit
 					]
 				)
 			)
+
+
+## What phases two to four see on a frame the bail let through, because the fix for
+## this has to come from something the addon can tell apart. Two candidates are
+## priced here:
+##
+##   - the SLOPE ALLOWANCE. If the surface being landed on is walkable, walking
+##     forward along it would have gained `forward * tan(angle)` by itself. A step
+##     that gains no more than that is one move_and_slide could have taken, so it
+##     needs no stair step. Costs nothing - every number is already in hand.
+##   - the RAISED RE-SWEEP. A corner is only ambiguous at the corner: sweeping the
+##     same motion again from a few millimetres higher should report the face on a
+##     ramp and the riser on a step. Costs one extra sweep on frames with a steep
+##     contact, which is every stair frame.
+func _report_the_rest_of_the_chain(c: StairsCharacter, from: Transform3D, walkable_limit: float) -> void:
+	var params: PhysicsTestMotionParameters3D = PhysicsTestMotionParameters3D.new()
+	params.margin = COLLIDER_MARGIN
+	var result: PhysicsTestMotionResult3D = PhysicsTestMotionResult3D.new()
+	var motion: Vector3 = Vector3(WALK * _delta, 0.0, 0.0)
+
+	# The raised re-sweep, before anything else moves, so it is measured from the
+	# same place the real first sweep starts.
+	for lift: float in _corner_lifts:
+		params.from = from.translated(Vector3(0.0, lift, 0.0))
+		params.motion = motion
+		if not PhysicsServer3D.body_test_motion(c.get_rid(), params, result):
+			print("    re-swept %.3f m higher: MISSES - obstacle is shorter than that" % lift)
+			continue
+		var lifted: float = result.get_collision_normal(0).angle_to(Vector3.UP)
+		print(
+			(
+				"    re-swept %.3f m higher: %.1f deg%s"
+				% [lift, rad_to_deg(lifted), " - WALKABLE" if lifted <= walkable_limit else ""]
+			)
+		)
+
+	# Now the chain itself, to reach the landing surface and the height gained.
+	params.from = from
+	params.motion = motion
+	if not PhysicsServer3D.body_test_motion(c.get_rid(), params, result):
+		return
+	var remainder: Vector3 = result.get_remainder()
+	var motion_transform: Transform3D = from.translated(result.get_travel())
+
+	params.from = motion_transform
+	params.motion = c.step_height * Vector3.UP
+	PhysicsServer3D.body_test_motion(c.get_rid(), params, result)
+	var rise: Vector3 = result.get_travel()
+	motion_transform = motion_transform.translated(rise)
+
+	var forward_motion: Vector3 = remainder
+	if forward_motion.length() < c.min_step_forward:
+		forward_motion = motion.normalized() * c.min_step_forward
+	params.from = motion_transform
+	params.motion = forward_motion
+	PhysicsServer3D.body_test_motion(c.get_rid(), params, result)
+	var forward: Vector3 = result.get_travel()
+	motion_transform = motion_transform.translated(forward)
+
+	params.from = motion_transform
+	params.motion = Vector3.DOWN * rise.length()
+	if not PhysicsServer3D.body_test_motion(c.get_rid(), params, result):
+		print("    set-down finds nothing")
+		return
+	motion_transform = motion_transform.translated(result.get_travel())
+
+	var landing: float = result.get_collision_normal(0).angle_to(Vector3.UP)
+	var gain: float = motion_transform.origin.y - from.origin.y
+	var allowance: float = forward.length() * tan(landing)
+	print(
+		(
+			"    lands on %.1f deg, forward %.4f, gains %+.4f, walking that surface would"
+			% [rad_to_deg(landing), forward.length(), gain]
+			+ " gain %.4f - slope allowance says %s"
+			% [allowance, "BAIL" if gain <= allowance else "step"]
+		)
+	)
+
+
+## The same walk up the same ramp with a bare CharacterBody3D, so the only thing
+## missing is the stair check itself.
+func _walk_without_stair_stepping(degrees: float) -> void:
+	var world: Node3D = Node3D.new()
+	add_child(world)
+	_box(world, Vector3(22.0, 1.0, 8.0), Vector3(1.0, -0.5, 0.0), 0.0)
+	_box(world, Vector3(RAMP_LENGTH, RAMP_THICKNESS, 8.0), _ramp_centre(degrees), degrees)
+
+	var c: CharacterBody3D = CharacterBody3D.new()
+	var shape_node: CollisionShape3D = CollisionShape3D.new()
+	var cyl: CylinderShape3D = CylinderShape3D.new()
+	cyl.radius = BODY_RADIUS
+	cyl.height = BODY_HEIGHT
+	cyl.margin = COLLIDER_MARGIN
+	shape_node.shape = cyl
+	c.add_child(shape_node)
+	world.add_child(c)
+	c.global_position = Vector3(0.0, REST_Y, 0.0)
+
+	for _i: int in SETTLE_FRAMES:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * _delta
+		c.move_and_slide()
+
+	for _i: int in WALK_FRAMES:
+		await get_tree().physics_frame
+		c.velocity.x = WALK
+		c.velocity.y -= GRAVITY * _delta
+		c.move_and_slide()
+
+	print(
+		(
+			"  %.0f deg with NO stair stepping at all: reached x %.3f y %.3f"
+			% [degrees, c.global_position.x, c.global_position.y]
+		)
+	)
+	world.queue_free()
+	await get_tree().process_frame
 
 
 func _record_step() -> void:

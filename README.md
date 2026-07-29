@@ -13,8 +13,9 @@ sweep it runs, it ran there first. What the fork adds is around it, and is liste
 below.
 
 Measured on `4.6-stable`, `4.7-stable` and `4.8.dev` with a `CylinderShape3D`, and
-run under **both** Godot Physics and Jolt — 53 cases, one of which Jolt still fails
-for a reason that is not about stairs. See [Physics engines](#physics-engines).
+run under **both** Godot Physics and Jolt — 53 cases, green on each. The two engines
+do not agree about everything, and where they differ is worth reading before you
+pick one: [Physics engines](#physics-engines).
 
 ## What this fork changes
 
@@ -350,44 +351,44 @@ to get the behaviour it advertised.
 
 ## Physics engines
 
-The suite runs against **Godot Physics**, which is the project default, and passes
-on `4.6-stable`, `4.7-stable` and `4.8.dev`.
+The suite runs under **both** engines and passes 53 of 53 on each, on `4.6-stable`,
+`4.7-stable` and `4.8.dev`. Godot Physics is the project default; Jolt is a
+first-class target rather than an afterthought, because it is where Godot is
+heading. Jolt costs more per frame: 55.9 us per character against 47.9 for the same
+combined move.
 
-Jolt is a first-class target here rather than an afterthought, because it is where
-Godot is heading. The suite and the diagnostics are run under both engines, and one
-of the two differences that turned up was a real bug rather than a curiosity: a
-slow walk at a high tick rate stalled against a step under Jolt, because the first
-sweep was fractionally shorter than the gap Jolt leaves at rest. That is fixed -
-see [Tick rate](#tick-rate) - and case 52 pins it.
+Running under both turned up two differences, and neither was cosmetic.
 
-Under **Jolt** on 4.8.dev, 52 of the 53 cases pass, and Jolt costs more: 55.9 us
-per character per frame against 47.9 for the same combined move.
+**Where a blocked body comes to rest.** Godot Physics parks a character flush
+against a face it has walked into; Jolt leaves it a few millimetres off - measured
+4.2 mm. That stalled a slow walk at a high tick rate outright, because the first
+sweep was shorter than the gap and so never reached the step at all. Fixed by
+flooring the first sweep; see [Tick rate](#tick-rate), pinned by case 52.
 
-The failing case is 19, a walkable 30 degree ramp, and the disagreement is about
-the ramp's leading **corner** rather than about stairs. On the single frame the
-character first touches the corner where the slab emerges from the ground, Godot
-Physics answers with the ramp face - 30.0 degrees, walkable, so the check hands the
-slope to `move_and_slide` - and Jolt answers with 49.5 degrees, four over the
-default limit, so the character takes one stair step onto the ramp. From the next
-frame on both engines report the face and both bail. A corner has no single normal
-and neither engine is wrong.
+**What a ramp's leading corner is.** Where a slab emerges from the ground the
+character touches a corner rather than a face, and a corner has no normal. Godot
+Physics answers with the ramp face - 30.0 degrees on a 30 degree ramp, walkable -
+and Jolt with 49.5, four over the default limit. It scales with tilt (25.6 degrees
+on a 10 degree ramp, 47.6 on a 20, 76.4 on a 40), so every ramp past about 20
+degrees is affected on one frame of the approach. Neither engine is wrong.
 
-It scales with the tilt, so it is a class of geometry rather than one unlucky slab:
-Jolt's steepest reading on the approach is 25.6 degrees on a 10 degree ramp, 47.6
-on a 20, 49.5 on a 30 and 76.4 on a 40. Every ramp past about 20 degrees crosses
-`floor_max_angle` on one frame of the approach.
+The consequence is not the stray `stepped_up` it looks like. Under Jolt that single
+stair step is **how a character gets onto a slope at all**: a plain
+`CharacterBody3D` with no stair stepping climbs this ramp to y 2.543 under Godot
+Physics and never gets onto it under Jolt, stopping dead at the corner, because
+Jolt's solver reads it as too steep to walk exactly as its motion query does.
+Suppressing the step so the two engines would agree was tried, and it stranded a
+character at the foot of a ramp.
 
-What it costs is 2 mm. The character finishes the 30 degree walk at y 2.545 under
-Jolt against 2.543 under Godot Physics, the ramp bench measures the same 0.364
-slope and the same 6.49 m advanced under both, and what is left is one spurious
-`stepped_up` - a footstep sound on a slope.
+So the walkable bail's premise - that a walkable surface is `move_and_slide`'s job
+- is an engine-dependent claim, and case 19 had been written against the engine
+where it holds. It now asserts what is true on both: the character climbs the ramp,
+and does not stair-step its way up it. Zero steps is what Godot Physics does, one is
+what an ambiguous corner costs under Jolt, and removing the walkable bail produces
+77 - so a ceiling of one keeps the case's teeth.
 
-It is recorded rather than worked around, and `test/diag_jolt_ramp.gd` is that
-record, including the two mitigations that turned out to have nothing to work with:
-raising `max_collisions` to look for a walkable contact behind the steep one (Jolt
-reports exactly one contact at a corner however high the cap goes), and Jolt's
-enhanced internal edge removal (already on by default for motion queries, and
-irrelevant to an external corner).
+`test/diag_jolt_ramp.gd` carries all of it, including the four mitigations that were
+tried and what each turned out to be worth.
 
 Reproduce either by dropping an `override.cfg` beside `project.godot`:
 

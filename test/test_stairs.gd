@@ -636,17 +636,38 @@ func _case_18_step_down_signals() -> void:
 	world.queue_free()
 
 
-## A ramp shallow enough to walk up is move_and_slide's job, not the step
-## check's. The character must still get up it, and must not report a stair step
-## for doing so.
+## A ramp shallow enough to walk up is move_and_slide's job, not the step check's.
+## The character must get up it, and must not stair-step its way up it.
 ##
-## This is the one case that fails under Jolt, and it is the engines disagreeing
-## about the ramp's leading corner rather than anything about stairs: on the single
-## frame the body first touches it, Godot Physics answers with the ramp face (30.0
-## degrees, walkable, bail) and Jolt with 49.5, four over the limit, which takes one
-## step. The two walks then diverge by 2 mm. See test/diag_jolt_ramp.gd, which
-## carries the whole comparison and the mitigations that do not work - do not loosen
-## this assertion to make Jolt pass.
+## "Must not stair-step its way up it" is the property, and it is not the same as
+## "must never emit a step". Without the walkable bail the check succeeds on nearly
+## every frame of a slope, which is dozens of steps and the speed bug the bail
+## exists to prevent. One step is a different thing, and on a ramp's leading corner
+## it is sometimes the only way up.
+##
+## That corner is where the engines part company, and neither is wrong: a corner has
+## no normal. On the frame the body first touches it, Godot Physics answers with the
+## ramp face (30.0 degrees, walkable) and Jolt with 49.5, four degrees over the
+## limit. So under Jolt this check does not bail, and takes one step.
+##
+## The step is load-bearing there rather than spurious, which is the part worth
+## knowing before touching any of this. Measured (test/diag_jolt_ramp.gd) a plain
+## CharacterBody3D with no stair stepping at all climbs this ramp to y 2.543 under
+## Godot Physics and does not get onto it AT ALL under Jolt - stuck at x 0.583,
+## because Jolt's own solver reads that corner as too steep to walk. Suppressing the
+## step to make this case read zero was tried, and it stranded case 20's character
+## at the foot of its ramp. The step is what gets a Jolt character up a slope.
+##
+## So the walk is split rather than the count merely raised, because "at most one
+## step anywhere" would accept a step in the MIDDLE of the climb - which is the
+## walkable bail failing, dressed as the corner. The approach may spend one step
+## getting onto the slope; the climb itself must spend none. Under Jolt that is
+## 1 then 0, under Godot Physics 0 then 0, and with the walkable bail removed it is
+## 77 across the two.
+const _RAMP_APPROACH_FRAMES: int = 20
+const _RAMP_CLIMB_FRAMES: int = 70
+
+
 func _case_19_walkable_ramp() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 12.0)
@@ -657,14 +678,24 @@ func _case_19_walkable_ramp() -> void:
 	var counts: Dictionary = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
-	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), 90)
+
+	# Long enough to reach the corner and be on the face past it - the corner step
+	# lands on frame 11 of this walk under Jolt, and both engines report the face
+	# from frame 12.
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), _RAMP_APPROACH_FRAMES)
+	var on_the_approach: int = counts["up"]
+
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), _RAMP_CLIMB_FRAMES)
+	var on_the_climb: int = counts["up"] - on_the_approach
 
 	_check(
-		"19 a walkable ramp is climbed without reporting a step",
-		c.global_position.y > REST_Y + 0.5 and counts["up"] == 0,
+		"19 a walkable ramp is climbed without stair-stepping up it",
+		c.global_position.y > REST_Y + 0.5 and on_the_approach <= 1 and on_the_climb == 0,
 		(
-			"y=%.3f up=%d expected y>%.2f and no stepped_up"
-			% [c.global_position.y, counts["up"], REST_Y + 0.5]
+			"y=%.3f, %d steps getting onto the ramp and %d climbing it, expected y>%.2f"
+			% [c.global_position.y, on_the_approach, on_the_climb, REST_Y + 0.5]
+			+ " with at most one on the approach and none on the climb - a step on the"
+			+ " climb means the walkable bail is not handing the slope to move_and_slide"
 		),
 	)
 	world.queue_free()
