@@ -55,6 +55,29 @@ signal stepped_down
 ## the motion, so the leg runs out of length long before it runs out of iterations.
 @export_range(1, 8) var step_slide_iterations: int = _FORWARD_SLIDE_ITERATIONS
 
+## Move horizontally and vertically as two separate passes rather than one
+## combined move. Off by default: it changes how every frame resolves, not just
+## the ones near a step, so it is not something to switch on for an existing
+## project without walking it.
+##
+## What it buys, measured: a climb keeps its speed. Running an eight-tread
+## staircase at 8 m/s covers the full 12.00 m with the split and 11.57 m without;
+## at 14 m/s, 21.00 m against 20.30 m (test/diag_faststairs.gd).
+##
+## Not what it was written for. dresswithpockets' version exists to stop
+## "mis-steps" - frames that end in mid-air while running stairs, which switch the
+## step check off because it needs to be grounded. That failure does not happen
+## here: the same runs report zero airborne frames with the split both off and on,
+## because stair_step_down already catches them.
+##
+## What it costs: two move_and_slide calls, slope handling that resolves in two
+## steps rather than one, and a post-move API that reports only the second pass -
+## get_slide_collision_count, get_last_slide_collision and get_wall_normal all
+## describe the vertical move, so a wall scraped horizontally is invisible to a
+## controller reading them after the call. Assumes up_direction is the default
+## Vector3.UP; a rotated one is checked for and refused at boot.
+@export var split_move: bool = false
+
 ## The character's collision shape. Margin should be as low as you can get it
 ## without snagging on edges. A CylinderShape3D is strongly recommended: a
 ## capsule's rounded bottom catches the top corner of a step and reports a
@@ -210,13 +233,90 @@ func move_and_stair_step() -> void:
 	grounded = is_on_floor()
 
 	stair_step_up()
-	move_and_slide()
+	if split_move:
+		_move_split()
+	else:
+		move_and_slide()
 	stair_step_down()
 
 	# Cleared at the end, not the start: the controller sets these just before
 	# calling us, so clearing on entry would wipe the intent it just expressed.
 	desired_velocity = Vector3.ZERO
 	force_stair_step = false
+
+
+# split_move takes the frame apart along Y, and _HORIZONTAL hardcodes which axis
+# that is. A character with a rotated up_direction - a wall walker, a floating
+# controller - would get its passes split along an axis move_and_slide does not
+# agree is horizontal, and the result is not a near miss but a different movement
+# model. Refused at boot rather than left to be discovered.
+#
+# Only checked when split_move is on. The combined path does not care, and
+# stair_step_up's own use of _HORIZONTAL predates this and is unchanged by it.
+func _check_split_move_assumptions() -> void:
+	if not split_move:
+		return
+	if not up_direction.is_equal_approx(Vector3.UP):
+		push_error(
+			(
+				"[StairsCharacter] split_move needs the default up_direction, got %v - "
+				% up_direction
+				+ "turning split_move off"
+			)
+		)
+		split_move = false
+
+
+# Two move_and_slide calls instead of one: horizontal first, then vertical, with
+# velocity reassembled from what each pass gave back. dresswithpockets' write-up
+# moves this way and names the failure it is for - running stairs fast enough that
+# a combined move ends the frame in mid-air, which reads as not grounded and turns
+# the step check off for the frame that most needed it.
+#
+# The reassembly is the fiddly part. Each pass writes its own result back into
+# velocity, so the horizontal one has to be saved before the vertical one runs or
+# the vertical pass's zeroes overwrite it. What comes out is the horizontal from
+# the first pass and the vertical from the second, which is the same shape a
+# single call would have produced had the two not interfered.
+#
+# is_on_floor comes from the last call, so it reports the vertical pass - the pass
+# that actually meets the floor. So does every other post-move getter, which is
+# the API cost named on the export above.
+func _move_split() -> void:
+	var falling: float = velocity.y
+
+	velocity = velocity * _HORIZONTAL
+	move_and_slide()
+	var slid: Vector3 = velocity * _HORIZONTAL
+
+	# The platform push is applied by move_and_slide itself, before it looks at the
+	# character's own velocity, so a frame that calls it twice rides the platform
+	# twice. Measured (test/diag_platform.gd) a rider with no input of its own
+	# drifted 7.417 m across a platform that travelled 7.500 m - it is carried off
+	# the front at very nearly platform speed, which is not a subtle wrongness.
+	#
+	# The layers are the lever. move_and_slide recomputes the push each call and
+	# drops it to zero when the floor's layer is not in platform_floor_layers, so
+	# clearing them for the second pass suppresses the second push without touching
+	# how the floor itself is detected. The first pass keeps the push, which is the
+	# one the frame is owed.
+	#
+	# Costs one thing worth naming: platform_on_leave also reads the suppressed
+	# value, so a character that steps off a platform during the vertical pass does
+	# not inherit its velocity. The horizontal pass is what carries a walker off an
+	# edge, and that one is untouched.
+	var floor_layers: int = platform_floor_layers
+	var wall_layers: int = platform_wall_layers
+	platform_floor_layers = 0
+	platform_wall_layers = 0
+
+	velocity = Vector3(0.0, falling, 0.0)
+	move_and_slide()
+
+	platform_floor_layers = floor_layers
+	platform_wall_layers = wall_layers
+
+	velocity = slid + Vector3(0.0, velocity.y, 0.0)
 
 
 # Hooked to NOTIFICATION_READY rather than to _ready(): this class is meant to be
@@ -229,6 +329,7 @@ func _notification(what: int) -> void:
 	if what == NOTIFICATION_READY:
 		_resolve_margin()
 		_init_step_smoothing()
+		_check_split_move_assumptions()
 	# NOTIFICATION_PROCESS is dispatched to _notification on every script in the
 	# chain, so a subclass defining its own _process cannot switch this off the way
 	# it could shadow a _process method - the same reason margin resolution hangs

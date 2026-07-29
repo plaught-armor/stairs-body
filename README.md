@@ -47,6 +47,7 @@ reads the margin off the shape you assign and warns if it is above 0.01.
 | `step_down_height` | How far the character can be snapped back *down*, when that should differ from how far it can climb. Negative - the default - follows `step_height`, which is what every existing scene expects. Split them when up and down want different generosity: a short reach down stops a character being hauled onto every ledge it walks off, a long one keeps it glued to stairs it can only just climb. |
 | `min_step_forward` | Smallest distance the forward leg of the check will probe, whatever the tick rate. Default `0.02`, the same value and the same reason as Jolt's `mWalkStairsMinStepForward`. Below this floor the check does not degrade, it stalls: see [Tick rate](#tick-rate) below. `0` removes the floor and restores the old behaviour, which exists to measure against rather than to ship. |
 | `step_slide_iterations` | How many times the forward leg may slide along a contact and sweep again. Default `4`; `1` is the old single sweep, which cannot climb a staircase with a wall beside it. There is nothing to gain past a handful - each slide strictly shrinks the motion, so the leg runs out of length long before it runs out of iterations. |
+| `split_move` | Move horizontally and vertically as two separate passes instead of one combined move. Off by default, because it changes how every frame resolves and not only the ones near a step. What it buys, measured: a climb keeps its speed. See [Splitting the move](#splitting-the-move) below. |
 | `desired_velocity` | Where the controller *wants* to go this frame. Only used when actual horizontal velocity is zero, which is what makes stepping up from a standstill work. Any vertical component is ignored, so handing over a whole movement vector with gravity already in it is fine. Cleared for you after each call. |
 | `force_stair_step` | Runs the step check even when not grounded, for cases like a wall jump that should have caught a ledge but snagged just below it. Cleared for you after each call. |
 | `grounded` / `was_grounded` | Ground state as the addon sees it, which is not always `is_on_floor()` - the step logic sometimes moves the body in ways that leave `is_on_floor()` reading false. Both are refreshed at the top of `move_and_stair_step()`, before it moves anything, so `grounded` is the state as of the *start* of the current frame and `was_grounded` the frame before. Neither reports this frame's post-move state; use `is_on_floor()` for that. |
@@ -139,6 +140,49 @@ wall climbs fine. `test/diag_wallhug.gd` is that comparison.
 Walking head-on into a wall costs nothing extra - the motion slides to zero on
 the first try and the loop breaks out - so the measured per-frame cost is
 unchanged from the single-sweep version.
+
+## Splitting the move
+
+`split_move` replaces the single `move_and_slide()` with two: a horizontal pass,
+then a vertical one, with velocity reassembled from what each gave back.
+[dresswithpockets' write-up](https://dresswithpockets.github.io/2025/03/19/godot-stair-stepping.html)
+moves this way to fix "mis-steps" - running stairs fast enough that a combined
+move ends the frame in mid-air, which reads as not grounded and switches the step
+check off for the frame that most needed it.
+
+That failure does not happen here. Measured on an eight-tread staircase
+(`test/diag_faststairs.gd`), running down at 3, 8 and 14 m/s produces **zero**
+airborne frames on either setting - `stair_step_down` is already catching what
+the split would have caught.
+
+What the split does buy is speed. A climb costs ground with the combined move and
+costs none with the split:
+
+| Ascending | Combined | Split | Free run |
+|---|---|---|---|
+| 8 m/s, 1.5 s | 11.57 m | 12.00 m | 12.00 m |
+| 14 m/s, 1.5 s | 20.30 m | 21.00 m | 21.00 m |
+
+So it is worth having if your character runs stairs and you want the stairs to be
+free, and it is not worth having for the reason it was originally written. It
+costs two `move_and_slide` calls a frame and resolves slopes in two steps rather
+than one, which is why it is off unless you ask for it - run the diagnostic on
+your own treads before turning it on.
+
+Two things to know before you do. `move_and_slide` applies the floor's platform
+velocity itself, before it looks at your velocity, so calling it twice would ride
+a moving platform twice - a rider with no input of its own drifted 7.417 m across
+a platform that travelled 7.500 m. The addon suppresses the second push by
+clearing the platform layers for the vertical pass, so this is handled, but the
+consequence is that `platform_on_leave` does not fire for a character that leaves
+a platform during that pass. And every post-move getter -
+`get_slide_collision_count()`, `get_last_slide_collision()`, `get_wall_normal()` -
+describes the vertical pass only, so a wall your character scraped horizontally
+is invisible to a controller that reads them after the call.
+
+`split_move` assumes the default `up_direction`. A rotated one is caught at boot
+and the flag is turned back off rather than left to move the character along an
+axis `move_and_slide` disagrees is horizontal.
 
 ## Signals
 

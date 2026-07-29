@@ -94,6 +94,8 @@ func _run_all() -> void:
 	await _case_43_step_down_height_reaches_past_the_climb()
 	await _case_44_one_slide_iteration_is_the_old_single_sweep()
 	await _case_45_a_zero_forward_floor_is_the_old_unfloored_leg()
+	await _case_46_split_move_steps_up_and_snaps_down()
+	await _case_47_split_move_rides_a_platform_once()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -1760,6 +1762,123 @@ func _case_45_a_zero_forward_floor_is_the_old_unfloored_leg() -> void:
 			"pos=%v climbed at %d Hz with the floor removed, so case 40 is passing for"
 			% [c.global_position, RATE]
 			+ " some reason other than the floor and min_step_forward is not wired"
+		),
+	)
+	world.queue_free()
+
+
+## split_move replaces the single combined move_and_slide with a horizontal pass
+## and a vertical one, so it changes how every frame resolves rather than only the
+## ones near a step. This is the no-regression pin: the two behaviours the class
+## exists for must still happen with it on.
+##
+## Deliberately not a pin on what the split is FOR. Measured on a staircase run at
+## speed (test/diag_faststairs.gd) the split does not remove airborne frames -
+## there were none to remove, on either setting - what it removes is the ground
+## lost to the stairs: a 8 m/s climb covers 12.00 m with the split against 11.57 m
+## without, and a 14 m/s one 21.00 m against 20.30 m, the full free-run distance in
+## both split cases. That is a speed-retention difference, worth having and worth
+## measuring on your own geometry, but too tied to tread size to pin here.
+func _case_46_split_move_steps_up_and_snaps_down() -> void:
+	var up_world: Node3D = _new_world()
+	_add_ground(up_world, 1.0)
+	_add_step(up_world, 0.2)
+	var climber: StairsCharacter = _add_character(up_world, StairsCharacter, 0.0)
+	climber.split_move = true
+
+	await _simulate(climber, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(climber, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+
+	# Read out before the world goes: the check below reports both positions, and
+	# the climber is freed with its world.
+	var climbed_at: Vector3 = climber.global_position
+	var climbed: bool = absf(climbed_at.y - (REST_Y + 0.2)) < EPS
+
+	# The height alone does not need the vertical pass: stair_step_up commits the
+	# rise and stair_step_down does the snap, so a _move_split that dropped its
+	# second move_and_slide entirely would still put the body in both right places.
+	# What the vertical pass alone does is consume gravity - without it velocity.y
+	# accumulates every frame and is near -GRAVITY by the end of a second's walk.
+	var settled: bool = absf(climber.velocity.y) < GRAVITY * DELTA * 2.0
+	var left_falling: float = climber.velocity.y
+	up_world.queue_free()
+	# process_frame, not physics_frame: queue_free is flushed at the end of the
+	# frame, and resuming on the next physics_frame can land before that flush -
+	# which would leave the first world's step standing in the second world, right
+	# where the next character walks.
+	await get_tree().process_frame
+
+	# Case 05's world, so the snap has the same 0.2 drop to find.
+	var down_world: Node3D = _new_world()
+	_add_box(down_world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
+	_add_box(down_world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.7, 0.0))
+	var walker: StairsCharacter = _add_character(down_world, StairsCharacter, 0.0)
+	walker.split_move = true
+
+	await _simulate(walker, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(walker, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+
+	var snapped: bool = (
+		absf(walker.global_position.y - (REST_Y - 0.2)) < EPS and walker.is_on_floor()
+	)
+	_check(
+		"46 split_move steps up and snaps down like the combined move",
+		climbed and snapped and settled,
+		(
+			"climbed=%s at %v, snapped=%s at %v, velocity.y=%.3f - the split pass broke"
+			% [climbed, climbed_at, snapped, walker.global_position, left_falling]
+			+ " a behaviour the combined one has"
+		),
+	)
+	down_world.queue_free()
+
+
+## move_and_slide applies the floor's platform velocity itself, before it looks at
+## the character's own, so a frame that calls it twice rides the platform twice.
+## Measured before the fix (test/diag_platform.gd): a rider holding no input at
+## all drifted 7.417 m across a platform that travelled 7.500 m - carried off the
+## front at very nearly platform speed.
+##
+## Found by review rather than by play, and reachable from the plainest possible
+## setup, which is why it is pinned rather than left to the diagnostic: any
+## character standing on any moving floor with split_move on.
+func _case_47_split_move_rides_a_platform_once() -> void:
+	const PLATFORM_SPEED: float = 5.0
+
+	var world: Node3D = _new_world()
+	var platform: AnimatableBody3D = AnimatableBody3D.new()
+	var platform_shape: CollisionShape3D = CollisionShape3D.new()
+	var platform_box: BoxShape3D = BoxShape3D.new()
+	platform_box.size = Vector3(40.0, 1.0, 8.0)
+	platform_shape.shape = platform_box
+	platform.add_child(platform_shape)
+	world.add_child(platform)
+	platform.global_position = Vector3(0.0, -0.5, 0.0)
+
+	var rider: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	rider.split_move = true
+
+	await _simulate(rider, Vector3.ZERO, SETTLE_FRAMES)
+
+	var offset_at_start: float = rider.global_position.x - platform.global_position.x
+	for _i: int in WALK_FRAMES:
+		await get_tree().physics_frame
+		# The platform moves first, the way a tween or an AnimationPlayer drives
+		# one, so the rider meets a floor that has already advanced.
+		platform.global_position.x += PLATFORM_SPEED * DELTA
+		# No input of its own: every metre the rider covers came from the floor.
+		rider.velocity.y -= GRAVITY * DELTA
+		rider.move_and_stair_step()
+
+	var drift: float = (rider.global_position.x - platform.global_position.x) - offset_at_start
+	var travelled: float = PLATFORM_SPEED * float(WALK_FRAMES) * DELTA
+	_check(
+		"47 split_move rides a moving platform once, not twice",
+		absf(drift) < EPS,
+		(
+			"rider drifted %+.3f m across a platform that travelled %.3f m - the two"
+			% [drift, travelled]
+			+ " passes are each applying the platform push"
 		),
 	)
 	world.queue_free()
