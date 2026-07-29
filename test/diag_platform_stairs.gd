@@ -27,6 +27,7 @@ extends Node3D
 ## RESULT: fixed for horizontal platforms, still open for a descending lift.
 ##
 ##     sliding staircase   0, 2, 5, 10, 20 and -2, -10 m/s   all climbed
+##     diagonal 5 across   +1 up  0.21 of 0.80 SHORT   -1 up  STUCK
 ##     staircase on a lift 0 climbed  +1 climbed  -1 STUCK
 ##     boarding a platform 0, -2, -5 m/s                     all climbed
 ##
@@ -48,6 +49,13 @@ extends Node3D
 ## horizontal carry is zero there by construction, so nothing in the fix applies.
 ## It wants the same treatment this one got: reproduce it in the probe harness and
 ## find out what the sweep actually sees before writing anything.
+##
+## The diagonal rows exist because correcting one axis and not the other is a
+## claim worth testing rather than assuming. It does not hold up: 5 across and 1
+## up manages 0.21 m of a possible 0.80, and 5 across and 1 down does not climb at
+## all - worse than the pure lift at the same vertical speed. So the horizontal
+## correction does not degrade gracefully when a vertical component is present,
+## and diagonal belongs with the lift as unsolved rather than as partly handled.
 
 var _slides: PackedFloat32Array = [0.0, 2.0, 5.0, 10.0, 20.0, -2.0, -10.0]
 var _lifts: PackedFloat32Array = [0.0, 1.0, -1.0]
@@ -85,6 +93,11 @@ func _run() -> void:
 	for speed: float in _slides:
 		var result: PackedFloat32Array = await _ride_stairs(Vector3(speed, 0.0, 0.0))
 		_report("  slide %+5.1f m/s" % speed, result, FULL_CLIMB)
+
+	print("diagonal platform (horizontal and vertical at once):")
+	for speed: float in [1.0, -1.0]:
+		var diagonal: PackedFloat32Array = await _ride_stairs(Vector3(5.0, speed, 0.0))
+		_report("  5.0 across, %+4.1f up" % speed, diagonal, FULL_CLIMB)
 
 	print("staircase on a lift (+ is upward):")
 	for speed: float in _lifts:

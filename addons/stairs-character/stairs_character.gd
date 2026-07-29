@@ -631,7 +631,30 @@ func stair_step_up() -> void:
 	# vertical platforms fail for a different reason that is not yet understood -
 	# see the note in test/diag_platform_stairs.gd. Static floors report zero here,
 	# so nothing about ordinary geometry changes.
-	var platform_carry: Vector3 = get_platform_velocity() * _HORIZONTAL * delta
+	#
+	# What this is exact for is a platform at steady state, which is what it is
+	# read as. get_platform_velocity is last frame's observation, so on any frame
+	# where the platform's motion CHANGES - boarding it, leaving it, accelerating,
+	# stopping dead, reversing - the offset describes the frame before rather than
+	# this one. Every one of those is a single frame that the next observation
+	# corrects, and none is worse than the un-offset behaviour they replace, but
+	# they are the frames where this is an approximation rather than a correction.
+	# The one that bites hardest is a platform reversing at speed, where the offset
+	# points the wrong way entirely for that frame.
+	#
+	# Diagonal motion is not handled, and measuring it says so plainly. Correcting
+	# the horizontal half while leaving the vertical half stale is not most of the
+	# answer: a platform moving 5 across and 1 up climbs 0.21 m of a possible 0.80,
+	# and 5 across and 1 down does not climb at all (test/diag_platform_stairs.gd).
+	# Both sit with the pure-lift failure as unsolved, and the same investigation
+	# covers them - whatever the vertical case needs, diagonal needs too.
+	# Grounded only. get_platform_velocity holds what the LAST move_and_slide saw,
+	# so an airborne frame - a force_stair_step ledge catch one frame after jumping
+	# off a moving platform - would still be carrying that platform's velocity and
+	# would aim the sweep at a displacement nothing is about to apply.
+	var platform_carry: Vector3 = Vector3.ZERO
+	if grounded:
+		platform_carry = get_platform_velocity() * _HORIZONTAL * delta
 
 	# This variable gets reused for all the following checks
 	var motion_transform: Transform3D = global_transform.translated(platform_carry)

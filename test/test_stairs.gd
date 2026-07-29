@@ -97,6 +97,7 @@ func _run_all() -> void:
 	await _case_46_split_move_steps_up_and_snaps_down()
 	await _case_47_split_move_rides_a_platform_once()
 	await _case_48_climbs_stairs_that_ride_a_moving_platform()
+	await _case_49_seats_the_horizontal_once_on_a_moving_platform()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -1950,3 +1951,65 @@ func _platform_box(body: PhysicsBody3D, size: Vector3, centre: Vector3) -> void:
 	shape_node.shape = box
 	shape_node.position = centre
 	body.add_child(shape_node)
+
+
+## Case 48 climbs at a walking pace, which takes the Y-only commit: the horizontal
+## is left to move_and_slide, so the seat branch never runs and the subtraction
+## that stops it double-counting the platform carry goes untested.
+##
+## This walks slowly enough to force that branch. Below min_step_forward / delta -
+## 1.2 m/s at 60 Hz - the frame's whole reach is under the forward floor, so
+## probe_outruns_the_frame fires and the addon seats the horizontal itself. On a
+## moving platform that seat has to subtract the carry it added for the sweeps,
+## because move_and_slide is still going to apply it: without the subtraction the
+## body gains a platform-frame of ground on every step, which on a 5 m/s platform
+## is 0.083 m a time.
+func _case_49_seats_the_horizontal_once_on_a_moving_platform() -> void:
+	const PLATFORM_SPEED: float = 5.0
+	const CRAWL: float = 0.6
+	const RISE: float = 0.2
+	const FRAMES: int = 150
+
+	var world: Node3D = _new_world()
+	var platform: AnimatableBody3D = AnimatableBody3D.new()
+	_platform_box(platform, Vector3(60.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	_platform_box(platform, Vector3(20.0, 2.0, 8.0), Vector3(11.0, RISE - 1.0, 0.0))
+	world.add_child(platform)
+	platform.global_position = Vector3.ZERO
+
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.4)
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+
+	var start_gap: float = c.global_position.y - platform.global_position.y
+	var worst_gain: float = 0.0
+	var previous_relative_x: float = c.global_position.x - platform.global_position.x
+	for _i: int in FRAMES:
+		await get_tree().physics_frame
+		platform.global_position.x += PLATFORM_SPEED * DELTA
+		c.velocity.x = CRAWL
+		c.velocity.y -= GRAVITY * DELTA
+		c.desired_velocity = Vector3(CRAWL, 0.0, 0.0)
+		c.move_and_stair_step()
+		var relative_x: float = c.global_position.x - platform.global_position.x
+		worst_gain = maxf(worst_gain, relative_x - previous_relative_x)
+		previous_relative_x = relative_x
+
+	var gained: float = (c.global_position.y - platform.global_position.y) - start_gap
+	# One platform-frame is the discriminator, and it is the only honest one here.
+	# A legitimate seat frame already advances more than the crawl does - it plants
+	# the body up to min_step_forward onto the step, plus whatever the first sweep
+	# travelled, measured at 0.0391 m - so a ceiling near the crawl's own 0.010 m
+	# fails on correct behaviour. Committing the carry twice adds PLATFORM_SPEED *
+	# DELTA on top of that, 0.083 m, landing near 0.12. The gap between 0.039 and
+	# 0.122 is wide, and a full platform-frame sits in the middle of it.
+	var ceiling: float = PLATFORM_SPEED * DELTA
+	_check(
+		"49 seats the horizontal once on a moving platform",
+		absf(gained - RISE) < EPS and worst_gain <= ceiling,
+		(
+			"gained %.2f m (expected %.2f), worst frame advanced %.4f m against the"
+			% [gained, RISE, worst_gain]
+			+ " platform, ceiling %.4f - the seat is committing the carry twice" % ceiling
+		),
+	)
+	world.queue_free()
