@@ -229,9 +229,13 @@ to get the behaviour it advertised.
 
     test/run.sh
 
-Runs a headless suite of 36 cases that builds each world procedurally and exits
+Runs a headless suite of 47 cases that builds each world procedurally and exits
 with the number of failures. Nothing in `test/` ships with the addon; it is all
 development material for this repository.
+
+Point `GODOT` at a binary if the default in `run.sh` does not exist on your
+machine: `GODOT=/path/to/godot test/run.sh`. The suite passes identically on
+`4.6-stable`, `4.7-stable` and `4.8.dev`.
 
 Alongside it are the benchmarks and diagnostics behind the addon's performance
 and correctness choices. Each one records its measured numbers in its header, so
@@ -243,9 +247,12 @@ the reasoning survives without rerunning anything:
 | `bench_frame.gd`, `diag_state.gd` | The honest per-character-per-frame cost, driving real frames — and what state those characters are actually in |
 | `bench_micro.gd` | The work *around* the sweeps — and why none of it is worth rewriting |
 | `bench_primitive.gd`, `diag_castmotion.gd`, `diag_multishape.gd` | Whether a cheaper sweep primitive could replace `body_test_motion` (it cannot) |
-| `bench_ramp.gd` | What the walkable-surface bail is worth |
+| `bench_ramp.gd` | What the walkable-surface bail is worth, and what the split move costs on a slope |
+| `diag_wallhug.gd`, `diag_tickrate.gd` | The two ways the forward leg used to stall outright - a wall beside the stairs, and a high tick rate |
+| `diag_faststairs.gd`, `diag_platform.gd` | What the split move buys on stairs, and that it rides a moving platform once rather than twice |
 | `diag_reuse.gd`, `diag_slide.gd`, `diag_latency.gd` | Whether the check can be cached or deferred (it cannot, without costing stairs) |
 | `diag_phase2.gd`, `diag_sink_robustness.gd`, `diag_steep_landing.gd` | Whether the four-phase algorithm can lose a phase (it cannot) |
+| `diag_steepedge.gd` | Whether Jolt's steep-edge retry is worth carrying here (it is not - the record of a feature written, measured and removed) |
 
 Several of these exist to record a **negative** result. If you are about to try
 one of these optimisations, read the relevant header first — the measurement is
