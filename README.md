@@ -163,11 +163,22 @@ costs none with the split:
 | 8 m/s, 1.5 s | 11.57 m | 12.00 m | 12.00 m |
 | 14 m/s, 1.5 s | 20.30 m | 21.00 m | 21.00 m |
 
-So it is worth having if your character runs stairs and you want the stairs to be
-free, and it is not worth having for the reason it was originally written. It
-costs two `move_and_slide` calls a frame and resolves slopes in two steps rather
-than one, which is why it is off unless you ask for it - run the diagnostic on
-your own treads before turning it on.
+Slopes behave the same either way. The ramp bench (`test/bench_ramp.gd`) now runs
+both paths over a 20 degree ramp and measures the same slope to three places:
+
+| 20 degree ramp | Grounded | Advanced | Climbed | Slope | Cost |
+|---|---|---|---|---|---|
+| Combined | 1.00 | 6.49 m | 2.36 m | 0.364 | 48.2-48.8 us |
+| Split | 1.00 | 6.62 m | 2.41 m | 0.364 | 61.6-62.2 us |
+
+So the split does not climb slopes differently, it climbs them slightly further
+in the same frames - the same speed retention it shows on stairs. The price is
+**28% more per character per frame**, which is simply the second
+`move_and_slide`.
+
+Worth having if your character runs stairs and you want the stairs to be free,
+and not worth having for the reason it was originally written. Off unless you ask
+for it - run the diagnostics on your own geometry first.
 
 Two things to know before you do. `move_and_slide` applies the floor's platform
 velocity itself, before it looks at your velocity, so calling it twice would ride

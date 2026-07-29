@@ -32,6 +32,19 @@ extends Node3D
 ## frames, at an identical measured slope: it is stair stepping up the ramp
 ## rather than walking up it, and arrives 13% early. A character that climbs
 ## slopes faster than it crosses flat ground is the bug the bail prevents.
+##
+## The bench now runs twice, once per move path, because split_move's docs claimed
+## a slope cost nobody had measured. Three runs, identical to the centimetre:
+##
+##                grounded  advanced  climbed  slope  us/char/frame
+##     combined       1.00    6.49 m   2.36 m  0.364      48.2-48.8
+##     split          1.00    6.62 m   2.41 m  0.364      61.6-62.2
+##
+## The slope is the same number to three places, so the split does not climb
+## differently - it climbs the same ramp slightly further in the same frames, the
+## same 2% speed retention it shows on stairs, and stays grounded throughout. What
+## it costs is 28%, and that is per character per frame on a slope rather than
+## anything about slopes specifically: it is the second move_and_slide.
 
 const CHARACTERS: int = 100
 const FRAMES: int = 150
@@ -48,6 +61,7 @@ const RAMP_LENGTH: float = 40.0
 const RAMP_THICKNESS: float = 1.0
 
 var _ramp: Array[StairsCharacter] = []
+var _world: Node3D
 
 
 func _ready() -> void:
@@ -61,7 +75,7 @@ func _box(size: Vector3, centre: Vector3, tilt_deg: float = 0.0) -> void:
 	box.size = size
 	shape_node.shape = box
 	body.add_child(shape_node)
-	add_child(body)
+	_world.add_child(body)
 	body.global_position = centre
 	body.rotation.z = deg_to_rad(tilt_deg)
 
@@ -76,7 +90,7 @@ func _character(at: Vector3) -> StairsCharacter:
 	shape_node.shape = cyl
 	c.add_child(shape_node)
 	c.collider = shape_node
-	add_child(c)
+	_world.add_child(c)
 	c.global_position = at
 	return c
 
@@ -91,20 +105,32 @@ func _drive(group: Array[StairsCharacter], walk: Vector3) -> void:
 
 
 func _run() -> void:
+	print("ramp %.0f degrees, tan = %.3f" % [RAMP_DEGREES, tan(deg_to_rad(RAMP_DEGREES))])
+	await _measure(false)
+	await _measure(true)
+	get_tree().quit()
+
+
+## One full run of the bench. `split` picks which move path the characters use,
+## so the two rows are the same slope, the same settle and the same frame count -
+## only the move differs.
+func _measure(split: bool) -> void:
+	_world = Node3D.new()
+	add_child(_world)
+	_ramp.clear()
+
 	var span: float = CHARACTERS * LANE + 20.0
 	# A shallow ramp rising in +x. Positive rotation about z lifts the +x end.
-	_box(
-		Vector3(RAMP_LENGTH, RAMP_THICKNESS, span),
-		Vector3(0.0, 0.0, 0.0),
-		RAMP_DEGREES
-	)
+	_box(Vector3(RAMP_LENGTH, RAMP_THICKNESS, span), Vector3(0.0, 0.0, 0.0), RAMP_DEGREES)
 
 	# Drop each character from well above the slope and let it settle onto it,
 	# rather than trusting a hand-computed surface height.
 	var start_x: float = -RAMP_LENGTH * 0.35
 	var drop_y: float = start_x * tan(deg_to_rad(RAMP_DEGREES)) + 3.0
 	for i: int in CHARACTERS:
-		_ramp.append(_character(Vector3(start_x, drop_y, (i - CHARACTERS * 0.5) * LANE)))
+		var c: StairsCharacter = _character(Vector3(start_x, drop_y, (i - CHARACTERS * 0.5) * LANE))
+		c.split_move = split
+		_ramp.append(c)
 
 	var walk: Vector3 = Vector3(WALK, 0.0, 0.0)
 	for _i: int in SETTLE:
@@ -132,10 +158,19 @@ func _run() -> void:
 	var climbed: float = probe.global_position.y - y_before
 	var advanced: float = probe.global_position.x - x_before
 	var slope: float = climbed / advanced if absf(advanced) > 0.001 else 0.0
-	print("ramp %.0f degrees, tan = %.3f" % [RAMP_DEGREES, tan(deg_to_rad(RAMP_DEGREES))])
 	print(
-		"grounded %.2f  advanced %.2f m  climbed %.2f m  measured slope %.3f"
-		% [float(grounded_frames) / total, advanced, climbed, slope]
+		(
+			"%-8s grounded %.2f  advanced %.2f m  climbed %.2f m  slope %.3f  %.2f us/char/frame"
+			% [
+				"split" if split else "combined",
+				float(grounded_frames) / total,
+				advanced,
+				climbed,
+				slope,
+				float(elapsed) / (FRAMES * CHARACTERS),
+			]
+		)
 	)
-	print("%.2f us per character per frame" % (float(elapsed) / (FRAMES * CHARACTERS)))
-	get_tree().quit()
+
+	_world.queue_free()
+	await get_tree().process_frame

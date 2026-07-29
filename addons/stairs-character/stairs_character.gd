@@ -70,8 +70,13 @@ signal stepped_down
 ## here: the same runs report zero airborne frames with the split both off and on,
 ## because stair_step_down already catches them.
 ##
-## What it costs: two move_and_slide calls, slope handling that resolves in two
-## steps rather than one, and a post-move API that reports only the second pass -
+## What it costs: 28% more per character per frame, measured on the ramp bench
+## (48.2-48.8 us combined against 61.6-62.2 us split, three runs). That is the
+## second move_and_slide, not anything about slopes - the measured slope is 0.364
+## either way, and the split covers 6.62 m of a 20 degree ramp where the combined
+## move covers 6.49 m, the same slight speed retention it shows on stairs.
+##
+## What it also costs: a post-move API that reports only the second pass -
 ## get_slide_collision_count, get_last_slide_collision and get_wall_normal all
 ## describe the vertical move, so a wall scraped horizontally is invisible to a
 ## controller reading them after the call. Assumes up_direction is the default
