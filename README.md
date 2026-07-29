@@ -1,42 +1,108 @@
 # Stairs Character
 
-A simple to use class that enables your CharacterBody3D to handle stairs properly.
+A `CharacterBody3D` subclass that walks up and down steps. It sweeps the body
+itself with `body_test_motion` rather than raycasting, so the character steps on
+whatever its collider would actually fit on.
 
-Mainly tested with the Jolt physics engine and cylinder colliders, not guaranteed to work well with anything else - but try it!
+Replace `move_and_slide()` with `move_and_stair_step()` and that is the feature.
+
+This is a **hard fork** of [Andicraft/stairs-character](https://github.com/Andicraft/stairs-character).
+It does not track upstream and does not send changes back. The four-phase
+stepping algorithm is Andrea Jörgensen's and is unchanged in substance — every
+sweep it runs, it ran there first. What the fork adds is around it, and is listed
+below.
+
+Measured on `4.6-stable`, `4.7-stable` and `4.8.dev` with **Godot Physics** and a
+`CylinderShape3D`, which is what the 51-case suite runs against. Jolt is close but
+not identical — see [Physics engines](#physics-engines).
+
+## What this fork changes
+
+Behaviour, all of it measured and pinned by a test case:
+
+- **The forward leg slides** along whatever it hits and sweeps again, so a
+  staircase with a wall beside it can be climbed while holding a diagonal into
+  that wall. Before, the wall stole the contact and the character was pinned.
+- **A minimum forward probe** (`min_step_forward`), so the check does not
+  deadlock at high tick rates. Same value and same reason as Jolt's
+  `mWalkStairsMinStepForward`.
+- **Stepping up from a standstill** pressed against a step face, which needs the
+  probe to fall back on declared intent when `move_and_slide` has zeroed the
+  velocity into the face every frame.
+- **Stairs that ride a moving platform** — sliding, lifts in both directions, and
+  the two combined. See [Moving platforms](#moving-platforms).
+- **A height-gain check** before the step is committed, Jolt's last check: a step
+  that ends no higher than it started is not a step.
+- **Split reaches**: `step_down_height` bounds the snap down independently of how
+  far the character can climb.
+- **Optional visual step smoothing** (`smooth_node`, `step_smoothing`), which
+  eases a child node rather than the body, because easing the body breaks the
+  physics.
+- **An optional split move** (`split_move`), horizontal then vertical.
+
+Around the behaviour:
+
+- Ground-state bookkeeping moved into `move_and_stair_step()`, where a subclass
+  defining its own `_physics_process` cannot silently switch it off. Startup work
+  hangs off `_notification` for the same reason.
+- The collider margin is read from the shape you assign instead of hardcoded.
+- Split `stepped_up` / `stepped_down` signals alongside the combined `stepped`.
+- The two query objects are allocated once and reused, not four per character per
+  frame.
+- Static typing throughout, and a headless test suite the original did not have —
+  51 cases, plus the benchmarks and diagnostics behind every number in this file.
 
 ## Install
 
-Copy `addons/stairs-character/` into your project. That is the whole install.
-`StairsCharacter` registers itself because the script carries a `class_name`, so
-it is available whether or not the plugin is enabled in **Project Settings >
-Plugins** — enabling it only lists the addon there with its version and author.
+Copy `addons/stairs-character/` into your project, **keeping the folder name**.
+That is the whole install. `StairsCharacter` registers itself because the script
+carries a `class_name`, so it is available whether or not the plugin is enabled in
+**Project Settings > Plugins** — enabling it only lists the addon there with its
+version and author.
+
+The folder name matters because the class icon is referenced by absolute path and
+Godot has no relative form for it. Rename the folder and the node quietly falls
+back to the default icon.
 
 The `LICENSE` inside that folder is not decoration: this is MIT-derived work and
 the attribution has to travel with the code, so keep it beside the scripts.
 
-## Usage instructions:
+## Use
 
-1. Make your character controller extend `StairsCharacter` instead of `CharacterBody3D`.
-2. Assign your character's collision shape to the `collider` property.
-3. Every frame, set `desired_velocity` to the desired direction of movement.
-4. Call `move_and_stair_step()` instead of calling `move_and_slide()`.
-5. Done!
+Extend `StairsCharacter` instead of `CharacterBody3D`, assign your collision shape
+to the `collider` export, and call `move_and_stair_step()` where you would have
+called `move_and_slide()`:
+
+```gdscript
+extends StairsCharacter
+
+func _physics_process(delta: float) -> void:
+    velocity.y -= gravity * delta
+    velocity.x = input_direction.x * speed
+    velocity.z = input_direction.z * speed
+    desired_velocity = Vector3(velocity.x, 0.0, velocity.z)
+    move_and_stair_step()
+```
+
+`desired_velocity` is where the controller *wants* to go this frame. Setting it is
+what makes stepping up from a standstill work; leave it unset and you get the
+original behaviour, which stalls in that one case.
 
 You do not need to call `super()` from `_ready` or `_physics_process`. Everything
-the class needs to do happens inside `move_and_stair_step()` and in notification
-handling, both of which a subclass cannot accidentally switch off by defining its
-own version.
+the class needs happens inside `move_and_stair_step()` and in notification
+handling, neither of which a subclass can accidentally switch off.
 
 ## Use a cylinder collider
 
 This matters more than it sounds. A capsule's rounded bottom catches the top
 corner of a step as the character is set back down and reports a contact around
-52 degrees, which the `floor_max_angle` check then correctly rejects - so every
+52 degrees, which the `floor_max_angle` check then correctly rejects — so every
 step up silently fails and the character just walks into the step. Use a
 `CylinderShape3D`. The addon warns at startup if you use anything else.
 
-Keep the shape's margin as low as you can without snagging on edges. The addon
-reads the margin off the shape you assign and warns if it is above 0.01.
+Keep the shape's margin as low as you can without snagging on edges, around
+`0.001`. The addon reads the margin off the shape you assign and warns if it is
+above `0.01`.
 
 ## Properties
 
@@ -48,7 +114,7 @@ reads the margin off the shape you assign and warns if it is above 0.01.
 | `min_step_forward` | Smallest distance the forward leg of the check will probe, whatever the tick rate. Default `0.02`, the same value and the same reason as Jolt's `mWalkStairsMinStepForward`. Below this floor the check does not degrade, it stalls: see [Tick rate](#tick-rate) below. `0` removes the floor and restores the old behaviour, which exists to measure against rather than to ship. |
 | `step_slide_iterations` | How many times the forward leg may slide along a contact and sweep again. Default `4`; `1` is the old single sweep, which cannot climb a staircase with a wall beside it. There is nothing to gain past a handful - each slide strictly shrinks the motion, so the leg runs out of length long before it runs out of iterations. |
 | `split_move` | Move horizontally and vertically as two separate passes instead of one combined move. Off by default, because it changes how every frame resolves and not only the ones near a step. What it buys, measured: a climb keeps its speed. See [Splitting the move](#splitting-the-move) below. |
-| `desired_velocity` | Where the controller *wants* to go this frame. Only used when actual horizontal velocity is zero, which is what makes stepping up from a standstill work. Any vertical component is ignored, so handing over a whole movement vector with gravity already in it is fine. Cleared for you after each call. |
+| `desired_velocity` | Where the controller *wants* to go this frame. The probe follows whichever is larger, this or actual horizontal velocity - so it takes over when `move_and_slide` has zeroed the velocity into a step face and an acceleration-based controller cannot rebuild it. The exception is backpressure: when velocity opposes intent (knockback, an explosion, a shove) velocity is trusted regardless of size, so the body is not seated forward onto a step it is being pushed away from. Any vertical component is ignored, so handing over a whole movement vector with gravity already in it is fine. Cleared for you after each call. |
 | `force_stair_step` | Runs the step check even when not grounded, for cases like a wall jump that should have caught a ledge but snagged just below it. Cleared for you after each call. |
 | `grounded` / `was_grounded` | Ground state as the addon sees it, which is not always `is_on_floor()` - the step logic sometimes moves the body in ways that leave `is_on_floor()` reading false. Both are refreshed at the top of `move_and_stair_step()`, before it moves anything, so `grounded` is the state as of the *start* of the current frame and `was_grounded` the frame before. Neither reports this frame's post-move state; use `is_on_floor()` for that. |
 | `smooth_node` | A visual child - a camera or mesh pivot - whose local Y the addon eases after each step, so the view does not pop the instant the body snaps. Leave it unassigned for the original hard snap. See [Step smoothing](#step-smoothing) below. |
@@ -141,6 +207,51 @@ Walking head-on into a wall costs nothing extra - the motion slides to zero on
 the first try and the loop breaks out - so the measured per-frame cost is
 unchanged from the single-sweep version.
 
+## Moving platforms
+
+Stairs bolted to something that moves - a lift, a ship deck, a train carriage -
+work, in every direction, and nothing is asked of your controller.
+
+They needed two fixes for two different reasons, and the shared cause is
+scheduling. The step check runs *before* `move_and_slide`, and `move_and_slide` is
+what re-seats a body on a moving floor: it applies the floor's displacement as a
+move of its own, before it moves the character by its velocity. So at the moment
+the check runs, the body is still standing where the last frame left it while the
+platform has moved on.
+
+- **Sliding sideways.** The sweeps measured from that stale position, so the gap
+  to the next step face was inflated by exactly the platform's travel - 0.0919 m
+  against a 0.05 m probe at 5 m/s, so the sweep missed on that frame and on every
+  frame after. The check now starts its sweeps offset by the displacement
+  `move_and_slide` is about to apply.
+- **Lifts.** Here the sweeps were never wrong. All four succeeded and reported a
+  real step, on every frame, and the character still gained nothing: 47 step-ups
+  and 47 step-downs in 60 frames. The step is committed in Y alone, with the
+  horizontal owed to `move_and_slide` - so on a descending lift the platform push
+  dropped the body below the lip it had just been placed on before it moved
+  forward at all, and the forward move then met the step face side-on and slid
+  back down. The carry now covers the vertical too, and the commit nets that part
+  off again, which leaves the body one carry high - exactly where the push lands
+  it on the lip.
+
+Measured across the grid in `test/diag_platform_stairs.gd`: sliding at 0, 2, 5, 10
+and 20 m/s with the walk and 2 and 10 against it; lifts up and down; both
+diagonals; and boarding a platform from static ground. Every row climbs the full
+flight.
+
+Two things to know. The carry is `get_platform_velocity()`, which is what the
+*last* `move_and_slide` observed, so it is exact for a platform at steady state
+and one frame stale on any frame where the platform's motion changes - boarding,
+stopping, accelerating, reversing. Each is a single frame the next observation
+corrects. Reversing is the worst of them, and it was measured rather than left as
+a worry: a lift flipping between +1 and -1 m/s every 1, 2, 5 and 20 frames climbs
+the full flight at all four periods, though contact suffers - the grounded
+fraction falls to 0.36 when it reverses every frame or two.
+
+The other is that the carry only applies while grounded, so a `force_stair_step`
+ledge catch in mid-air one frame after jumping off a platform is not offset by a
+displacement nothing is about to apply.
+
 ## Splitting the move
 
 `split_move` replaces the single `move_and_slide()` with two: a horizontal pass,
@@ -163,12 +274,12 @@ costs none with the split:
 | 8 m/s, 1.5 s | 11.57 m | 12.00 m | 12.00 m |
 | 14 m/s, 1.5 s | 20.30 m | 21.00 m | 21.00 m |
 
-Slopes behave the same either way. The ramp bench (`test/bench_ramp.gd`) now runs
-both paths over a 20 degree ramp and measures the same slope to three places:
+Slopes behave the same either way. The ramp bench (`test/bench_ramp.gd`) runs both
+paths over a 20 degree ramp and measures the same slope to three places:
 
 | 20 degree ramp | Grounded | Advanced | Climbed | Slope | Cost |
 |---|---|---|---|---|---|
-| Combined | 1.00 | 6.49 m | 2.36 m | 0.364 | 48.2-48.8 us |
+| Combined | 1.00 | 6.49 m | 2.36 m | 0.364 | 47.9-48.8 us |
 | Split | 1.00 | 6.62 m | 2.41 m | 0.364 | 61.6-62.2 us |
 
 So the split does not climb slopes differently, it climbs them slightly further
@@ -225,6 +336,31 @@ compatibility shim will go away in a future breaking release.
 never read, so it never did anything; assign `step_height` directly for a frame
 to get the behaviour it advertised.
 
+## Physics engines
+
+The suite runs against **Godot Physics**, which is the project default, and passes
+on `4.6-stable`, `4.7-stable` and `4.8.dev`.
+
+Under **Jolt** on 4.8.dev, 50 of the 51 cases pass. The one that fails is case 19,
+a walkable 30 degree ramp: Jolt reports a contact the walkable-surface bail does
+not recognise as walkable, so the character stair-steps up the ramp and emits a
+spurious `stepped_up`. The movement itself is unaffected - the ramp bench measures
+the same 0.364 slope and the same 6.49 m advanced under both engines - so what
+this costs today is a footstep sound on a slope, not a climb. The cost is higher
+too: 55.9 us per character per frame against 47.9 on Godot Physics for the same
+combined move.
+
+Reproduce either by dropping an `override.cfg` beside `project.godot`:
+
+```ini
+[physics]
+
+3d/physics_engine="Jolt Physics"
+```
+
+Upstream recommended Jolt. This fork has not been tuned for it, and the gap above
+is the whole of what is known.
+
 ## Tests
 
     test/run.sh
@@ -234,8 +370,7 @@ with the number of failures. Nothing in `test/` ships with the addon; it is all
 development material for this repository.
 
 Point `GODOT` at a binary if the default in `run.sh` does not exist on your
-machine: `GODOT=/path/to/godot test/run.sh`. The suite passes identically on
-`4.6-stable`, `4.7-stable` and `4.8.dev`.
+machine: `GODOT=/path/to/godot test/run.sh`.
 
 Alongside it are the benchmarks and diagnostics behind the addon's performance
 and correctness choices. Each one records its measured numbers in its header, so
@@ -261,16 +396,10 @@ already there, and in most cases the idea is faster and wrong.
 
 ## Credits
 
-This is a **hard fork**, maintained by [plaught-armor](https://github.com/plaught-armor/stairs-character).
-It does not track upstream and does not send changes back.
+The stepping algorithm is [Andrea Jörgensen's](https://github.com/Andicraft/stairs-character),
+MIT licensed. This fork is maintained at
+[plaught-armor/stairs-character](https://github.com/plaught-armor/stairs-character).
 
-The four-phase stepping algorithm is [Andrea Jörgensen's](https://github.com/Andicraft/stairs-character),
-MIT licensed, and is unchanged in substance — every sweep it runs, it ran there
-first. What the fork adds is around it: bookkeeping moved somewhere a subclass
-cannot switch off, the collider margin read from the shape instead of hardcoded,
-split step signals, optional visual step smoothing, reused query objects, static
-typing throughout, and a headless test suite the original did not have.
-
-MIT either way, and Andrea's copyright notice stays in LICENSE — it is a
+MIT either way, and Andrea's copyright notice stays in `LICENSE` — it is a
 condition of the licence, not a courtesy, and it travels with any copy you make
 of this code.
