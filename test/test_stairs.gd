@@ -98,6 +98,8 @@ func _run_all() -> void:
 	await _case_47_split_move_rides_a_platform_once()
 	await _case_48_climbs_stairs_that_ride_a_moving_platform()
 	await _case_49_seats_the_horizontal_once_on_a_moving_platform()
+	await _case_50_climbs_stairs_on_a_descending_lift()
+	await _case_51_climbs_stairs_on_a_diagonal_platform()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -2013,3 +2015,99 @@ func _case_49_seats_the_horizontal_once_on_a_moving_platform() -> void:
 		),
 	)
 	world.queue_free()
+
+
+## Cases 50 and 51 ride the same flight case 48 does, along an arbitrary platform
+## velocity rather than a horizontal one. Returns the height gained RELATIVE to the
+## platform, because the absolute number rides the lift and says nothing about
+## whether the character climbed.
+func _climb_a_moving_flight(platform_velocity: Vector3, rise: float, treads: int) -> float:
+	var world: Node3D = _new_world()
+	var platform: AnimatableBody3D = AnimatableBody3D.new()
+	_platform_box(platform, Vector3(40.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	for i: int in treads:
+		var length: float = 1.0 * float(treads - i) + 8.0
+		_platform_box(
+			platform,
+			Vector3(length, 2.0, 8.0),
+			Vector3(1.0 + 1.0 * float(i) + length * 0.5, rise * float(i + 1) - 1.0, 0.0),
+		)
+	world.add_child(platform)
+	platform.global_position = Vector3.ZERO
+
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+
+	var start_gap: float = c.global_position.y - platform.global_position.y
+	for _i: int in WALK_FRAMES:
+		await get_tree().physics_frame
+		platform.global_position += platform_velocity * DELTA
+		c.velocity.x = WALK_SPEED
+		c.velocity.y -= GRAVITY * DELTA
+		c.desired_velocity = Vector3(WALK_SPEED, 0.0, 0.0)
+		c.move_and_stair_step()
+
+	var gained: float = (c.global_position.y - platform.global_position.y) - start_gap
+	world.queue_free()
+	return gained
+
+
+## A staircase riding a lift that is going DOWN, which is the case the horizontal
+## carry of case 48 does nothing for - a pure lift has no horizontal carry at all.
+##
+## The failure it pins is not a missed sweep. Measured before the fix
+## (test/diag_lift_probe.gd) every one of the four sweeps succeeded and reported a
+## +0.20 m step, the check committed it, and the character still gained nothing
+## across 60 frames: 47 step-ups and 47 step-downs, the same frame repeating
+## forever. move_and_slide applies the floor's displacement as a move of its own
+## BEFORE the character's, so a body committed at tread height with its footprint
+## still behind the lip was dropped a frame of lift travel below that lip first,
+## and its forward move then met the step face side-on and slid back down.
+##
+## So this is a regression test for the vertical half of the platform carry, and
+## specifically for netting it off again at the commit: leave the subtraction out
+## and the body is committed a lift-frame low, which is exactly where it cannot
+## survive the push that follows.
+func _case_50_climbs_stairs_on_a_descending_lift() -> void:
+	const LIFT_SPEED: float = -1.0
+	const RISE: float = 0.2
+	const TREADS: int = 3
+
+	var gained: float = await _climb_a_moving_flight(Vector3(0.0, LIFT_SPEED, 0.0), RISE, TREADS)
+	var full_climb: float = RISE * float(TREADS)
+	_check(
+		"50 climbs stairs on a descending lift",
+		absf(gained - full_climb) < EPS,
+		(
+			"gained %.2f m on a lift descending at %.1f m/s, expected %.2f - the step"
+			% [gained, LIFT_SPEED, full_climb]
+			+ " is committed below the lip and the platform push drops it off again"
+		),
+	)
+
+
+## Both halves of the carry at once, and the row that was worst before the fix:
+## measured 5 m/s across with 1 m/s of descent climbed NOTHING, worse than the pure
+## lift at the same vertical speed, while 5 across and 1 up managed 0.21 m of a
+## possible 0.80 (test/diag_platform_stairs.gd). Correcting one axis and leaving
+## the other stale was not most of the answer, and this is the case that says so.
+##
+## Descending rather than rising on purpose: it is the harder of the two, since a
+## rising lift pushes the body INTO the step it is trying to climb.
+func _case_51_climbs_stairs_on_a_diagonal_platform() -> void:
+	const ACROSS: float = 5.0
+	const DESCENT: float = -1.0
+	const RISE: float = 0.2
+	const TREADS: int = 3
+
+	var gained: float = await _climb_a_moving_flight(Vector3(ACROSS, DESCENT, 0.0), RISE, TREADS)
+	var full_climb: float = RISE * float(TREADS)
+	_check(
+		"51 climbs stairs on a platform moving across and down at once",
+		absf(gained - full_climb) < EPS,
+		(
+			"gained %.2f m on a platform moving %.1f across and %.1f down, expected"
+			% [gained, ACROSS, absf(DESCENT)]
+			+ " %.2f - the two halves of the platform carry do not compose" % full_climb
+		),
+	)

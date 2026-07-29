@@ -229,7 +229,7 @@ to get the behaviour it advertised.
 
     test/run.sh
 
-Runs a headless suite of 47 cases that builds each world procedurally and exits
+Runs a headless suite of 51 cases that builds each world procedurally and exits
 with the number of failures. Nothing in `test/` ships with the addon; it is all
 development material for this repository.
 
@@ -250,6 +250,7 @@ the reasoning survives without rerunning anything:
 | `bench_ramp.gd` | What the walkable-surface bail is worth, and what the split move costs on a slope |
 | `diag_wallhug.gd`, `diag_tickrate.gd` | The two ways the forward leg used to stall outright - a wall beside the stairs, and a high tick rate |
 | `diag_faststairs.gd`, `diag_platform.gd` | What the split move buys on stairs, and that it rides a moving platform once rather than twice |
+| `diag_platform_stairs.gd`, `diag_platform_probe.gd`, `diag_lift_probe.gd` | Stairs bolted to a moving platform - the grid of speeds and directions, and the two frame-level interrogations that found why a sliding one and a descending one each failed for different reasons |
 | `diag_reuse.gd`, `diag_slide.gd`, `diag_latency.gd` | Whether the check can be cached or deferred (it cannot, without costing stairs) |
 | `diag_phase2.gd`, `diag_sink_robustness.gd`, `diag_steep_landing.gd` | Whether the four-phase algorithm can lose a phase (it cannot) |
 | `diag_steepedge.gd` | Whether Jolt's steep-edge retry is worth carrying here (it is not - the record of a feature written, measured and removed) |

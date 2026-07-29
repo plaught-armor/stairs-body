@@ -626,11 +626,24 @@ func stair_step_up() -> void:
 	# the step moved with the platform too, so the offset cancels and a character
 	# standing still on a moving platform still finds nothing to climb.
 	#
-	# Horizontal only. A lift's vertical carry would ride straight into the
-	# committed step height at the end of this function and double the rise, and
-	# vertical platforms fail for a different reason that is not yet understood -
-	# see the note in test/diag_platform_stairs.gd. Static floors report zero here,
-	# so nothing about ordinary geometry changes.
+	# Vertical is carried too, and it has to be subtracted again at the commit or it
+	# rides into the step height and moves the rise by a frame of lift travel. That
+	# pairing is the whole of it, and it is what a descending lift needs.
+	#
+	# The failure it fixes, measured (test/diag_lift_probe.gd): a staircase on a lift
+	# descending at 1 m/s stepped up on EVERY frame and was snapped back down on
+	# every frame - 47 of each in 60 frames, gaining nothing. The sweeps were never
+	# at fault; replayed by hand on a stalled frame all four succeeded and reported a
+	# +0.20 m step. What the commit could not survive was the move that follows it:
+	# move_and_slide applies the floor's displacement as its own move BEFORE the
+	# character's, so a body committed to the tread height and left behind the lip -
+	# the ordinary Y-only commit, with the horizontal owed to move_and_slide - was
+	# dropped a frame of lift travel below that lip first, and the forward move then
+	# met the step face side-on and slid straight back down. Committing one carry
+	# higher lets that push land the body exactly on the lip, which is where a static
+	# floor has it, and the forward move clears as it always did.
+	#
+	# Static floors and horizontal platforms report zero here, so neither changes.
 	#
 	# What this is exact for is a platform at steady state, which is what it is
 	# read as. get_platform_velocity is last frame's observation, so on any frame
@@ -640,21 +653,24 @@ func stair_step_up() -> void:
 	# corrects, and none is worse than the un-offset behaviour they replace, but
 	# they are the frames where this is an approximation rather than a correction.
 	# The one that bites hardest is a platform reversing at speed, where the offset
-	# points the wrong way entirely for that frame.
+	# points the wrong way entirely for that frame - and now by twice the travel
+	# rather than once, since the commit nets off a carry the platform no longer has.
 	#
-	# Diagonal motion is not handled, and measuring it says so plainly. Correcting
-	# the horizontal half while leaving the vertical half stale is not most of the
-	# answer: a platform moving 5 across and 1 up climbs 0.21 m of a possible 0.80,
-	# and 5 across and 1 down does not climb at all (test/diag_platform_stairs.gd).
-	# Both sit with the pure-lift failure as unsolved, and the same investigation
-	# covers them - whatever the vertical case needs, diagonal needs too.
+	# Measured rather than left as a worry (test/diag_platform_stairs.gd): a lift
+	# reversing between +1 and -1 m/s every 1, 2, 5 and 20 frames climbs the full
+	# 0.80 m at every one of those periods. The un-offset code it replaces managed
+	# 0.40 m on the 20-frame flip, so the frames where this is least exact are still
+	# ahead of where they were. What the fast flips do cost is contact: the grounded
+	# fraction falls to 0.36 when the lift reverses every frame or two, against 1.00
+	# for a lift that holds its direction.
+	#
 	# Grounded only. get_platform_velocity holds what the LAST move_and_slide saw,
 	# so an airborne frame - a force_stair_step ledge catch one frame after jumping
 	# off a moving platform - would still be carrying that platform's velocity and
 	# would aim the sweep at a displacement nothing is about to apply.
 	var platform_carry: Vector3 = Vector3.ZERO
 	if grounded:
-		platform_carry = get_platform_velocity() * _HORIZONTAL * delta
+		platform_carry = get_platform_velocity() * delta
 
 	# This variable gets reused for all the following checks
 	var motion_transform: Transform3D = global_transform.translated(platform_carry)
@@ -800,6 +816,13 @@ func stair_step_up() -> void:
 	if surface_normal.angle_to(Vector3.UP) > floor_max_angle:
 		return #Can't stand on the thing we're trying to step on anyway
 
+	# What the body will actually be left at, which is the sweep result minus the
+	# displacement move_and_slide is about to apply itself. On a static floor or a
+	# horizontal platform the carry has no vertical part and this is the sweep result
+	# unchanged; on a lift it is one frame of lift travel away from it, and it is this
+	# number - not the raw sweep - that both the check below and the commit want.
+	var committed_y: float = motion_transform.origin.y - platform_carry.y
+
 	# A step that ends no higher than it started is not a step. The sweeps can
 	# reach here having risen, travelled forward and come straight back down onto
 	# the floor they left - a lip too shallow to land on, or a forward leg that
@@ -813,7 +836,7 @@ func stair_step_up() -> void:
 	# Reached rather than theorised. The minimum forward leg is what exposed it:
 	# before that, a frame with nothing left to travel turned back at the margin
 	# bail on the forward sweep instead of arriving here with a flat result.
-	if motion_transform.origin.y - global_position.y < _params.margin:
+	if committed_y - global_position.y < _params.margin:
 		return
 
 	# Move player to match the step height we just found. Only the Y is committed
@@ -839,12 +862,13 @@ func stair_step_up() -> void:
 	# Neither doubles the frame's motion, because in both the horizontal the probe
 	# used is the horizontal move_and_slide is about to not have.
 	var pre_step_y: float = global_position.y
-	global_position.y = motion_transform.origin.y
+	global_position.y = committed_y
 	if not carried_by_velocity or probe_outruns_the_frame:
 		# Minus the platform carry, because move_and_slide is still going to apply
 		# that displacement itself. The sweeps needed it to look in the right place;
 		# committing it here as well would ride the platform twice, which is the same
-		# double-push _move_split had to suppress.
+		# double-push _move_split had to suppress. The Y above is netted off for the
+		# same reason.
 		global_position.x = motion_transform.origin.x - platform_carry.x
 		global_position.z = motion_transform.origin.z - platform_carry.z
 	_accumulate_step_smoothing(global_position.y - pre_step_y)

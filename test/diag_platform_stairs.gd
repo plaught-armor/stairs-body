@@ -24,12 +24,22 @@ extends Node3D
 ## Heights are reported RELATIVE to the platform, because the absolute number
 ## moves with the platform and says nothing about whether the character climbed.
 ##
-## RESULT: fixed for horizontal platforms, still open for a descending lift.
+## RESULT: every row climbs, at grounded 1.00 throughout.
 ##
 ##     sliding staircase   0, 2, 5, 10, 20 and -2, -10 m/s   all climbed
-##     diagonal 5 across   +1 up  0.21 of 0.80 SHORT   -1 up  STUCK
-##     staircase on a lift 0 climbed  +1 climbed  -1 STUCK
+##     diagonal 5 across   +1 up climbed        -1 up climbed
+##     staircase on a lift 0 climbed  +1 climbed  -1 climbed
+##     reversing lift      flipping every 1, 2, 5, 20 frames  all climbed
 ##     boarding a platform 0, -2, -5 m/s                     all climbed
+##
+## It took two fixes for two different mechanisms, in that order.
+##
+## The reversing rows are the carry's own worst case rather than a platform anyone
+## builds: it describes the frame BEFORE, so a reversal points it the wrong way
+## entirely, and with the vertical half carried it is wrong by twice the travel. It
+## costs contact and not the climb - grounded falls to 0.36 flipping every frame or
+## two, against 1.00 for a lift that holds its direction - and it is still ahead of
+## what it replaced, which left the 20-frame flip SHORT at 0.40 m.
 ##
 ## Before the fix the sliding family stalled from 5 m/s up: the character parked
 ## against the first step face, stayed grounded every frame, and never rose, with
@@ -44,18 +54,30 @@ extends Node3D
 ## cleanly. stair_step_up now starts its sweeps offset by the displacement
 ## move_and_slide is about to apply, which is why 20 m/s climbs now.
 ##
-## The lift is NOT the same mechanism and is not fixed. A descending lift parks the
-## character at relative x 0.699 - touching the face, not short of it - and the
-## horizontal carry is zero there by construction, so nothing in the fix applies.
-## It wants the same treatment this one got: reproduce it in the probe harness and
-## find out what the sweep actually sees before writing anything.
+## The lift was NOT the same mechanism, which the numbers said before anything was
+## written: a descending lift parked the character at relative x 0.699 - TOUCHING
+## the face, not short of it - and a pure lift has no horizontal carry at all, so
+## nothing in the first fix could have applied. Its own probe harness
+## (test/diag_lift_probe.gd) found the sweeps were not the problem either. All four
+## succeeded on a stalled frame and reported a +0.20 m step; the character stepped
+## up 47 times in 60 frames and was snapped back down 47 times, gaining nothing.
+## What it could not survive was the move that follows the commit. move_and_slide
+## applies the floor's displacement as a move of its OWN before the character's, so
+## a body committed at tread height with its footprint still behind the lip was
+## dropped a frame of lift travel below that lip first, and its forward move then
+## met the step face side-on and slid straight back down.
 ##
-## The diagonal rows exist because correcting one axis and not the other is a
-## claim worth testing rather than assuming. It does not hold up: 5 across and 1
-## up manages 0.21 m of a possible 0.80, and 5 across and 1 down does not climb at
-## all - worse than the pure lift at the same vertical speed. So the horizontal
-## correction does not degrade gracefully when a vertical component is present,
-## and diagonal belongs with the lift as unsolved rather than as partly handled.
+## So the carry became three-dimensional and the commit nets the vertical part off
+## again, which puts the body one carry high - exactly where the platform push then
+## lands it on the lip, the way a static floor already had it.
+##
+## The diagonal rows exist because correcting one axis and not the other is a claim
+## worth testing rather than assuming, and it did not hold up: with only the
+## horizontal corrected, 5 across and 1 up managed 0.21 m of a possible 0.80, and 5
+## across and 1 down did not climb at all - worse than the pure lift at the same
+## vertical speed. They were right to be read as unsolved rather than as partly
+## handled, and they came back the moment the vertical half arrived rather than
+## needing anything of their own.
 
 var _slides: PackedFloat32Array = [0.0, 2.0, 5.0, 10.0, 20.0, -2.0, -10.0]
 var _lifts: PackedFloat32Array = [0.0, 1.0, -1.0]
@@ -74,6 +96,8 @@ const COLLIDER_MARGIN: float = 0.001
 const GRAVITY: float = 9.8
 const DELTA: float = 1.0 / 60.0
 const WALK: float = 3.0
+## How fast the reversing lift travels in whichever direction it is going.
+const REVERSAL_SPEED: float = 1.0
 const SETTLE_FRAMES: int = 20
 const WALK_FRAMES: int = 75
 
@@ -104,6 +128,16 @@ func _run() -> void:
 		var result: PackedFloat32Array = await _ride_stairs(Vector3(0.0, speed, 0.0))
 		_report("  lift  %+5.1f m/s" % speed, result, FULL_CLIMB)
 
+	# The carry is last frame's observation, so the frame a platform REVERSES is the
+	# frame it points the wrong way entirely - and with the vertical half carried it
+	# points wrong by twice the travel rather than once. Whether that costs a climb
+	# is a question for a measurement rather than for the paragraph in the addon
+	# that says it, so here it is, reversed as often as a frame or two apart.
+	print("a lift that keeps reversing (+-1.0 m/s, flipping every N frames):")
+	for period: int in [1, 2, 5, 20]:
+		var result: PackedFloat32Array = await _ride_stairs(Vector3.ZERO, period)
+		_report("  flip every %2d frames" % period, result, FULL_CLIMB)
+
 	print("stepping onto a moving platform from static ground (one step, %.2f m):" % STEP_RISE)
 	for speed: float in _boardings:
 		var result: PackedFloat32Array = await _board(speed)
@@ -130,7 +164,12 @@ func _report(label: String, result: PackedFloat32Array, expected: float) -> void
 
 ## Builds the staircase as children of one moving body, so the whole flight moves
 ## together the way a lift or a ship deck would. Returns [gained, grounded].
-func _ride_stairs(platform_velocity: Vector3) -> PackedFloat32Array:
+##
+## A non-zero `flip_period` ignores platform_velocity and drives the flight up and
+## down at REVERSAL_SPEED instead, flipping every that-many frames - the case the
+## per-frame carry is an approximation for, since it can only ever describe the
+## frame before.
+func _ride_stairs(platform_velocity: Vector3, flip_period: int = 0) -> PackedFloat32Array:
 	var world: Node3D = Node3D.new()
 	add_child(world)
 
@@ -155,9 +194,15 @@ func _ride_stairs(platform_velocity: Vector3) -> PackedFloat32Array:
 
 	var start_gap: float = c.global_position.y - platform.global_position.y
 	var grounded_frames: int = 0
-	for _i: int in WALK_FRAMES:
+	for i: int in WALK_FRAMES:
 		await get_tree().physics_frame
-		platform.global_position += platform_velocity * DELTA
+		if flip_period > 0:
+			# Integer division on purpose: the sign holds for flip_period frames and
+			# then inverts, so period 1 reverses on every single frame.
+			var direction: float = 1.0 if (i / flip_period) % 2 == 0 else -1.0
+			platform.global_position.y += REVERSAL_SPEED * direction * DELTA
+		else:
+			platform.global_position += platform_velocity * DELTA
 		c.velocity.x = WALK
 		c.velocity.y -= GRAVITY * DELTA
 		c.desired_velocity = Vector3(WALK, 0.0, 0.0)
