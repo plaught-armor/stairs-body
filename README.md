@@ -341,14 +341,34 @@ to get the behaviour it advertised.
 The suite runs against **Godot Physics**, which is the project default, and passes
 on `4.6-stable`, `4.7-stable` and `4.8.dev`.
 
-Under **Jolt** on 4.8.dev, 50 of the 51 cases pass. The one that fails is case 19,
-a walkable 30 degree ramp: Jolt reports a contact the walkable-surface bail does
-not recognise as walkable, so the character stair-steps up the ramp and emits a
-spurious `stepped_up`. The movement itself is unaffected - the ramp bench measures
-the same 0.364 slope and the same 6.49 m advanced under both engines - so what
-this costs today is a footstep sound on a slope, not a climb. The cost is higher
-too: 55.9 us per character per frame against 47.9 on Godot Physics for the same
-combined move.
+Under **Jolt** on 4.8.dev, 50 of the 51 cases pass, and Jolt costs more: 55.9 us
+per character per frame against 47.9 for the same combined move.
+
+The failing case is 19, a walkable 30 degree ramp, and the disagreement is about
+the ramp's leading **corner** rather than about stairs. On the single frame the
+character first touches the corner where the slab emerges from the ground, Godot
+Physics answers with the ramp face - 30.0 degrees, walkable, so the check hands the
+slope to `move_and_slide` - and Jolt answers with 49.5 degrees, four over the
+default limit, so the character takes one stair step onto the ramp. From the next
+frame on both engines report the face and both bail. A corner has no single normal
+and neither engine is wrong.
+
+It scales with the tilt, so it is a class of geometry rather than one unlucky slab:
+Jolt's steepest reading on the approach is 25.6 degrees on a 10 degree ramp, 47.6
+on a 20, 49.5 on a 30 and 76.4 on a 40. Every ramp past about 20 degrees crosses
+`floor_max_angle` on one frame of the approach.
+
+What it costs is 2 mm. The character finishes the 30 degree walk at y 2.545 under
+Jolt against 2.543 under Godot Physics, the ramp bench measures the same 0.364
+slope and the same 6.49 m advanced under both, and what is left is one spurious
+`stepped_up` - a footstep sound on a slope.
+
+It is recorded rather than worked around, and `test/diag_jolt_ramp.gd` is that
+record, including the two mitigations that turned out to have nothing to work with:
+raising `max_collisions` to look for a walkable contact behind the steep one (Jolt
+reports exactly one contact at a corner however high the cap goes), and Jolt's
+enhanced internal edge removal (already on by default for motion queries, and
+irrelevant to an external corner).
 
 Reproduce either by dropping an `override.cfg` beside `project.godot`:
 
@@ -389,6 +409,7 @@ the reasoning survives without rerunning anything:
 | `diag_reuse.gd`, `diag_slide.gd`, `diag_latency.gd` | Whether the check can be cached or deferred (it cannot, without costing stairs) |
 | `diag_phase2.gd`, `diag_sink_robustness.gd`, `diag_steep_landing.gd` | Whether the four-phase algorithm can lose a phase (it cannot) |
 | `diag_steepedge.gd` | Whether Jolt's steep-edge retry is worth carrying here (it is not - the record of a feature written, measured and removed) |
+| `diag_jolt_ramp.gd` | Why a walkable ramp reports a step under Jolt and not under Godot Physics - the two engines' answers for the same corner, and the two mitigations that had nothing to work with |
 
 Several of these exist to record a **negative** result. If you are about to try
 one of these optimisations, read the relevant header first — the measurement is

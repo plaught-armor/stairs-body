@@ -637,6 +637,14 @@ func _case_18_step_down_signals() -> void:
 ## A ramp shallow enough to walk up is move_and_slide's job, not the step
 ## check's. The character must still get up it, and must not report a stair step
 ## for doing so.
+##
+## This is the one case that fails under Jolt, and it is the engines disagreeing
+## about the ramp's leading corner rather than anything about stairs: on the single
+## frame the body first touches it, Godot Physics answers with the ramp face (30.0
+## degrees, walkable, bail) and Jolt with 49.5, four over the limit, which takes one
+## step. The two walks then diverge by 2 mm. See test/diag_jolt_ramp.gd, which
+## carries the whole comparison and the mitigations that do not work - do not loosen
+## this assertion to make Jolt pass.
 func _case_19_walkable_ramp() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 12.0)
