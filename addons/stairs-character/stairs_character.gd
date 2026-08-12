@@ -164,12 +164,18 @@ const _DEFAULT_MARGIN: float = 0.01
 # shorter than this. Both are spelled out at the commit site, and both are cases
 # that are stuck otherwise.
 #
-# On such a frame BOTH probes are floored, the first sweep and the forward leg, so
-# the seat plants the body by up to about two of these rather than one: measured
-# 0.0401 m at 0.5 m/s and 120 Hz, against that frame's own reach of 0.0042 m. Case
-# 53 holds that bound, because the shapes that break it - a seat repeating across
-# the slide iterations, or one that commits and then lets move_and_slide add its
-# share again - land at four and up.
+# On a short-reach frame BOTH probes are floored, the first sweep and the forward
+# leg, so the seat plants the body by up to about two of these rather than one:
+# measured 0.0401 m at 0.5 m/s and 120 Hz, against that frame's own reach of
+# 0.0042 m. Case 53 holds that bound, because the shapes that break it - a seat
+# repeating across the slide iterations, or one that commits and then lets
+# move_and_slide add its share again - land at four and up.
+#
+# The standstill branch is bounded differently and by more: nothing floors its first
+# sweep (its reach is the frame's own, which is only short when standing still is
+# also true of the velocity), so its seat is that reach plus this floor on the
+# forward leg - about 0.087 m for a 4 m/s intent at 60 Hz. Unchanged by the floor
+# added to the first sweep, but worth stating, since the two branches share a commit.
 const _MIN_STEP_FORWARD: float = 0.02
 
 # Bounded (NASA rule 2) slide iterations for the forward leg. Walking head-on
@@ -461,6 +467,59 @@ func _init_step_smoothing() -> void:
 	set_process(true)
 
 
+# Whether every shape on this body has a flat bottom, which decides one thing
+# only: whether stair_step_down may judge a landing by the normal its sweep came
+# back with (see that function). False when there is nothing to ask - a body with
+# no shapes, or one carrying a shape this cannot reason about, keeps the behaviour
+# this class has always had.
+#
+# EVERY shape and not the `collider` export, which is the one thing here that is
+# not a matter of taste: the sweep tests the whole body, so the contact it comes
+# back with can belong to any shape on it. Reading the export alone declares a
+# body flat when a rounded shape lower down is what the sweep actually touched -
+# measured under Jolt, a legitimate cylinder assigned to the export with a sphere
+# hung below it loses EVERY step down on case 57's flight, silently, since
+# _resolve_margin's warning also looks only at the export and sees a cylinder.
+#
+# A DISABLED shape owner is skipped, and that is the difference between a check
+# and a check that can be switched off by accident: a disabled collider is still
+# in this list and its shape is still readable, so counting it hands the whole
+# refusal to any rig that keeps a spare rounded collider around - a crouch capsule
+# toggled off is the ordinary case. Measured on case 54's world, a cylinder with a
+# DISABLED capsule beside it committed onto the 63 degree face twice; an enabled
+# one is a genuinely rounded body and rightly keeps the old behaviour. The owner
+# flag is also the one the SWEEP honours - a disabled shape is not in the query at
+# all, measured - so the gate and the sweep now describe the same geometry. A shape
+# disabled straight on the server (PhysicsServer3D.body_set_shape_disabled) does not
+# reach that flag and is still counted here, which costs the refusal rather than
+# misplacing a body.
+#
+# The test is on the shape CLASS and not on its orientation, so a cylinder laid on
+# its rim answers true with a curved bottom. Deliberate: the failure direction is a
+# character that loses the step down rather than one placed on a wall, an upright
+# cylinder is what this class recommends and a body walking on its side is not a
+# case it supports anywhere else, and the alternative reads each shape's own
+# rotation on a frame that has a step to commit. Measured either way on a rotated
+# cylinder and a rotated box, and neither moved.
+#
+# Read here rather than resolved once beside the margin, and the asymmetry with
+# margin is deliberate: a margin that goes stale after a collider is swapped at
+# runtime costs precision, while this going stale re-arms the check for the exact
+# shapes it exists to spare. It walks a body's shape list, which is a handful of
+# entries and only on a frame that has a step down to commit.
+func _flat_bottomed() -> bool:
+	var shapes: int = 0
+	for owner_id: int in get_shape_owners():
+		if is_shape_owner_disabled(owner_id):
+			continue
+		for i: int in shape_owner_get_shape_count(owner_id):
+			var shape: Shape3D = shape_owner_get_shape(owner_id, i)
+			if not (shape is CylinderShape3D or shape is BoxShape3D):
+				return false
+			shapes += 1
+	return shapes > 0
+
+
 # How far down the snap may reach, resolving the "follow step_height" default.
 # Read at every use rather than resolved once, because both numbers are plain
 # exports a controller is free to retune between frames - a crouch that lowers the
@@ -540,6 +599,61 @@ func stair_step_down() -> void:
 	_params.motion = Vector3.DOWN * _step_down_reach()
 	# Nothing to step down on
 	if not PhysicsServer3D.body_test_motion(get_rid(), _params, _result):
+		return
+
+	# And nothing to step down ONTO if what the sweep found is too steep to stand
+	# on. This is the mirror of the check stair_step_up makes before it seats a
+	# character on the surface it stepped up to, and it is here for the same
+	# reason: a commit is a PLACEMENT. Without it the snap moves the body onto
+	# whatever the sweep hit and calls apply_floor_snap on it, so a character
+	# stepping off a lip onto a face too steep to stand on is set down ON the face -
+	# is_on_floor() false, gravity taking it straight back off, and a teleport's
+	# worth of travel in the middle of what should have been a fall.
+	#
+	# It matters more the further the reach goes. A character whose step_down_height
+	# follows step_height only reaches a step's worth below itself; one that carries
+	# the separate, longer reach that property exists for sweeps a band deep enough
+	# to find the FACE of a slope beside a ledge rather than the floor at the bottom
+	# of it.
+	#
+	# FLAT-BOTTOMED COLLIDERS ONLY, and that carve-out is measured rather than
+	# cautious. A rounded bottom catches the top corner of a step and reports the
+	# CORNER's normal rather than the tread's - the same mechanism _resolve_margin
+	# already warns about on the way up - so a capsule reads "too steep" on ordinary
+	# stairs: applied to every shape, this took case 56's 8-tread 0.40 m flight from
+	# 6 step downs to 0 for a capsule character. Rounded shapes therefore keep the
+	# behaviour they had, which is the one the class has always given them, and the
+	# check runs for the cylinder this class recommends and for a box.
+	#
+	# Asking is_on_floor() after committing was tried instead of the normal, so the
+	# test would be about where the body came to rest rather than about one contact:
+	# it refuses the capsule too, and legitimately - the pose a capsule is committed
+	# into IS one the engine reads as airborne, resolved by the next frame's
+	# depenetration. There is no pose test that separates the two; the shape is what
+	# separates them.
+	#
+	# Contact 0 is the only contact, since max_collisions is left at 1, and for a
+	# straight-down sweep it is the first thing under the body. The refusal is
+	# therefore about that one contact rather than about the whole landing, and
+	# that is a real edge and not a rounding error: a steep sliver anywhere under
+	# the footprint refuses a snap onto the flat floor beside it. Measured, a
+	# 0.30 m step down onto flat floor with a 70 degree bank whose toe sits inside
+	# the body's radius goes from 2 step downs to 0 and falls the 30 cm instead
+	# (both engines; the same bank at 30 degrees keeps its snap, so it is the angle
+	# and not the geometry). Sweeping for more contacts would price every frame of
+	# every character to sharpen one, and the cost of the edge is a fall where a
+	# step down would have done - which is the direction of failure this whole
+	# check exists to prefer.
+	#
+	# Vector3.UP rather than up_direction, matching the check this mirrors and the
+	# sweep whose normal it judges (Vector3.DOWN, above): this class is world-Y
+	# bound throughout - _check_split_move_assumptions is the only place that even
+	# asks about a rotated up, and only when split_move is on. Judging a world-down
+	# sweep against a non-world axis would be the one line here that did not. The
+	# consequence is new even so, since the way down had no angle opinion before: a
+	# character with a rotated up_direction can lose snaps onto surfaces it stands
+	# on perfectly well, and nothing in this repository stages one.
+	if _flat_bottomed() and _result.get_collision_normal(0).angle_to(Vector3.UP) > floor_max_angle:
 		return
 
 	# Measured across the whole downward move - the snap travel plus whatever

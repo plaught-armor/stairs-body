@@ -13,7 +13,7 @@ sweep it runs, it ran there first. What the fork adds is around it, and is liste
 below.
 
 Measured on `4.6-stable`, `4.7-stable` and `4.8.dev` with a `CylinderShape3D`, and
-run under **both** Godot Physics and Jolt — 53 cases, green on each. The two engines
+run under **both** Godot Physics and Jolt — 58 cases, green on each. The two engines
 do not agree about everything, and where they differ is worth reading before you
 pick one: [Physics engines](#physics-engines).
 
@@ -36,6 +36,10 @@ Behaviour, all of it measured and pinned by a test case:
   that ends no higher than it started is not a step.
 - **Split reaches**: `step_down_height` bounds the snap down independently of how
   far the character can climb.
+- **No step down onto a landing too steep to stand on**, which is the mirror of
+  the check the step *up* has always made. A commit is a placement, so without it
+  a character stepping off a lip onto a steep face is set down on the face. Read
+  only for flat-bottomed colliders — see [Use a cylinder collider](#use-a-cylinder-collider).
 - **Optional visual step smoothing** (`smooth_node`, `step_smoothing`), which
   eases a child node rather than the body, because easing the body breaks the
   physics.
@@ -51,7 +55,7 @@ Around the behaviour:
 - The two query objects are allocated once and reused, not four per character per
   frame.
 - Static typing throughout, and a headless test suite the original did not have —
-  53 cases, plus the benchmarks and diagnostics behind every number in this file.
+  58 cases, plus the benchmarks and diagnostics behind every number in this file.
 
 ## Install
 
@@ -100,6 +104,23 @@ corner of a step as the character is set back down and reports a contact around
 52 degrees, which the `floor_max_angle` check then correctly rejects — so every
 step up silently fails and the character just walks into the step. Use a
 `CylinderShape3D`. The addon warns at startup if you use anything else.
+
+The same corner contact is why the steep-landing refusal on the way **down** is
+read for flat-bottomed shapes only (`CylinderShape3D` and `BoxShape3D`). Applied
+to a capsule it fires on ordinary stairs: measured under Jolt on an 8-tread
+0.40 m flight, 6 step downs with the carve-out and 0 without, which would have
+removed a working feature from every capsule character rather than fixing
+anything. Case 56 pins that, and it is the shape *class* that is tested rather
+than its orientation — a cylinder laid on its rim answers flat-bottomed, because
+the failure direction that matters is a character placed on a wall, not one that
+loses a step down.
+
+It is read off **every shape on the body**, not off the `collider` export, since
+the sweep tests the whole body: a character with a cylinder assigned and a sphere
+hung below it loses every step down on the same flight, and neither the export nor
+the startup warning would see it. Case 57. Disabled shape owners are skipped, so
+a spare capsule kept around for a crouch and toggled off does not quietly switch
+the refusal off — case 58.
 
 Keep the shape's margin as low as you can without snagging on edges, around
 `0.001`. The addon reads the margin off the shape you assign and warns if it is
@@ -351,7 +372,7 @@ to get the behaviour it advertised.
 
 ## Physics engines
 
-The suite runs under **both** engines and passes 53 of 53 on each, on `4.6-stable`,
+The suite runs under **both** engines and passes 58 of 58 on each, on `4.6-stable`,
 `4.7-stable` and `4.8.dev`. Godot Physics is the project default; Jolt is a
 first-class target rather than an afterthought, because it is where Godot is
 heading. Jolt costs more per frame: 55.9 us per character against 47.9 for the same
@@ -405,7 +426,7 @@ is the whole of what is known.
 
     test/run.sh
 
-Runs a headless suite of 53 cases that builds each world procedurally and exits
+Runs a headless suite of 58 cases that builds each world procedurally and exits
 with the number of failures. Nothing in `test/` ships with the addon; it is all
 development material for this repository.
 

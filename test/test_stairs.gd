@@ -102,6 +102,11 @@ func _run_all() -> void:
 	await _case_51_climbs_stairs_on_a_diagonal_platform()
 	await _case_52_a_slow_walk_reaches_the_face_at_a_high_tick_rate()
 	await _case_53_a_slow_walk_does_not_lurch_when_it_seats()
+	await _case_54_no_step_down_onto_a_face_too_steep_to_stand_on()
+	await _case_55_steps_down_onto_a_face_it_can_stand_on()
+	await _case_56_a_capsule_keeps_its_step_downs()
+	await _case_57_a_second_rounded_shape_keeps_its_step_downs()
+	await _case_58_a_disabled_rounded_shape_does_not_disarm_the_refusal()
 
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
@@ -162,24 +167,81 @@ func _add_step(world: Node3D, top: float) -> void:
 	_add_box(world, Vector3(4.0, 2.0, 8.0), Vector3(3.0, top - 1.0, 0.0))
 
 
+## A deck whose top face sits at y = 0 and ends at a lip at x = `lip_x`, with a
+## slope of `angle_deg` falling away from that lip toward +x, `lip` below the deck
+## top, and flat floor at the foot of it to come to rest on. Returns the y of that
+## floor's top face.
+##
+## The face is a box turned about +z by MINUS the angle, and the sign is worth
+## stating because it is easy to build backwards and still look plausible: a
+## rotation about +z carries the box's own +x axis UPWARD, so a face that falls
+## away toward +x is the negative one. Built the other way this world is a slope
+## rising out of the lip, which still drops the body and still looks like a case.
+func _add_drop_over_face(world: Node3D, lip_x: float, lip: float, angle_deg: float) -> float:
+	## Length of the face along its own slope. A metre puts the foot of a 63 degree
+	## one 0.89 m below the lip, which is deeper than any reach a case here sets.
+	const FACE_LEN: float = 1.0
+
+	var deck_len: float = lip_x + 10.0
+	_add_box(world, Vector3(deck_len, 1.0, 8.0), Vector3(lip_x - deck_len * 0.5, -0.5, 0.0))
+
+	var angle: float = deg_to_rad(angle_deg)
+	var drop: float = FACE_LEN * sin(angle)
+	var run: float = FACE_LEN * cos(angle)
+	# The middle of the face's top surface, which runs from the lip (x = lip_x,
+	# one `lip` below the deck) down to the foot (x = lip_x + run).
+	var face_top: Vector3 = Vector3(lip_x + run * 0.5, -lip - drop * 0.5, 0.0)
+	var face_up: Vector3 = Vector3(sin(angle), cos(angle), 0.0)
+	_add_box(world, Vector3(FACE_LEN, 1.0, 8.0), face_top - face_up * 0.5, -angle_deg)
+
+	var floor_top: float = -lip - drop
+	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(lip_x + run + 5.0, floor_top - 0.5, 0.0))
+	return floor_top
+
+
+## A flight of `treads` steps of `rise` each falling away from a deck that ends at
+## x = 1.0, with floor at the bottom. Every tread is `going` deep.
+func _add_flight_down(world: Node3D, rise: float, going: float, treads: int) -> float:
+	_add_box(world, Vector3(22.0, 1.0, 8.0), Vector3(-10.0, -0.5, 0.0))
+	for i: int in treads:
+		var top: float = -rise * float(i + 1)
+		var centre_x: float = 1.0 + going * (float(i) + 0.5)
+		_add_box(world, Vector3(going, 2.0, 8.0), Vector3(centre_x, top - 1.0, 0.0))
+	var bottom: float = -rise * float(treads)
+	_add_box(
+		world,
+		Vector3(10.0, 1.0, 8.0),
+		Vector3(1.0 + going * float(treads) + 5.0, bottom - 0.5, 0.0),
+	)
+	return bottom
+
+
 ## `legacy_node_name` builds the character the way upstream scenes do — a child
 ## literally called "Collider" and nothing assigned to the export — so the
 ## compatibility fallback in `_resolve_margin` gets exercised too.
+##
+## `shape` overrides the cylinder above for the cases that are about the collider
+## itself rather than about the world. Everything else in the body is unchanged,
+## so a case that swaps it is comparing two shapes and nothing else.
 func _add_character(
 	world: Node3D,
 	script_res: Script,
 	start_x: float,
 	legacy_node_name: bool = false,
+	shape: Shape3D = null,
 ) -> StairsCharacter:
 	var c: StairsCharacter = script_res.new() as StairsCharacter
 	var shape_node: CollisionShape3D = CollisionShape3D.new()
 	shape_node.name = "Shape"
 	if legacy_node_name:
 		shape_node.name = "Collider"
-	var body_shape: CylinderShape3D = CylinderShape3D.new()
-	body_shape.radius = BODY_RADIUS
-	body_shape.height = BODY_HEIGHT
-	body_shape.margin = COLLIDER_MARGIN
+	var body_shape: Shape3D = shape
+	if body_shape == null:
+		var cylinder: CylinderShape3D = CylinderShape3D.new()
+		cylinder.radius = BODY_RADIUS
+		cylinder.height = BODY_HEIGHT
+		cylinder.margin = COLLIDER_MARGIN
+		body_shape = cylinder
 	shape_node.shape = body_shape
 	c.add_child(shape_node)
 	if not legacy_node_name:
@@ -2266,3 +2328,249 @@ func _case_51_climbs_stairs_on_a_diagonal_platform() -> void:
 			+ " %.2f - the two halves of the platform carry do not compose" % full_climb
 		),
 	)
+
+
+## A lip with a face too steep to stand on under it, walked off at a reach long
+## enough to sweep that face. The snap must refuse it.
+##
+## A commit is a PLACEMENT: the body is moved down onto whatever the sweep found
+## and apply_floor_snap is called there. Without the check the character is set
+## down ON the face - is_on_floor() false, gravity taking it straight back off,
+## and a teleport's worth of travel in the middle of what should have been a fall.
+##
+## step_down_height rather than the default reach, because that is where the case
+## lives: a reach that follows step_height only ever sweeps a step's worth below
+## the body, while the longer reach this property exists for is deep enough to
+## find the FACE of a slope beside a ledge rather than the floor at the bottom.
+##
+## The bar is the signal, not the position, and it has to be: the body ends up on
+## the floor at the foot of the face either way, since a body set down on a wall
+## slides off it. Case 55 is the premise beside this zero - the same lip over a
+## face that IS walkable, which does get stepped down onto - so a lane that
+## staged nothing cannot pass this one quietly.
+func _case_54_no_step_down_onto_a_face_too_steep_to_stand_on() -> void:
+	const LIP: float = 0.35
+	const STEEP: float = 63.0
+
+	var world: Node3D = _new_world()
+	var floor_top: float = _add_drop_over_face(world, 2.0, LIP, STEEP)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	c.step_down_height = 0.5
+	var counts: Dictionary = _count_signals(c)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+	# The drop past a refused face is a fall of over a metre, which does not finish
+	# inside the walk. Settling afterwards is also what makes the position bar
+	# below say something: a body still in the air passes no test about where it
+	# came to rest.
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES * 2)
+
+	var reached_the_floor: bool = absf(c.global_position.y - (floor_top + REST_Y)) < EPS
+	_check(
+		"54 no step down onto a face too steep to stand on",
+		counts["down"] == 0 and reached_the_floor and c.is_on_floor(),
+		(
+			"down=%d pos=%v expected down=0 and y~%.2f - a %.0f degree face is not"
+			% [counts["down"], c.global_position, floor_top + REST_Y, STEEP]
+			+ " something to be placed on, and the body must fall past it"
+		),
+	)
+	world.queue_free()
+
+
+## The control that keeps case 54 honest, and the one that says what the check is
+## reading: the same lip at the same reach over a face shallow enough to stand on
+## must still be stepped down onto. A refusal that fired on both would be a
+## step-down deleted rather than a placement refused.
+func _case_55_steps_down_onto_a_face_it_can_stand_on() -> void:
+	const LIP: float = 0.35
+	const WALKABLE: float = 25.0
+
+	var world: Node3D = _new_world()
+	_add_drop_over_face(world, 2.0, LIP, WALKABLE)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	c.step_down_height = 0.5
+	var counts: Dictionary = _count_signals(c)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+
+	_check(
+		"55 steps down onto a face it can stand on",
+		counts["down"] >= 1,
+		(
+			"down=%d expected >=1 - a %.0f degree face is inside floor_max_angle, so"
+			% [counts["down"], WALKABLE]
+			+ " the lip above it is a step down and not a fall"
+		),
+	)
+	world.queue_free()
+
+
+## The carve-out, and the reason the steep check is not applied to every shape: a
+## rounded bottom catches the top corner of a tread and reports the CORNER's
+## normal rather than the tread's - the same mechanism _resolve_margin already
+## warns about on the way up. Applied blind, the check therefore reads "too steep"
+## on ordinary stairs and takes the step down away from capsule characters
+## entirely: measured on this flight, 6 commits with the carve-out and 0 without.
+##
+## So this case is not about capsules being supported - they are warned about, not
+## refused, and this class has always given them what it gives them here. It is
+## about a fix for one shape not silently removing a feature from another.
+##
+## The flight is narrow (0.35 m of going under a 0.6 m wide body) and the rise is
+## over step_height, which is what puts the body on a corner rather than on a
+## tread for most of the descent. On a wide, shallow flight the capsule lands flat
+## and reports up, the check passes, and the case says nothing - measured, a
+## 4-tread 0.2 m flight at 0.6 m of going commits identically either way.
+func _case_56_a_capsule_keeps_its_step_downs() -> void:
+	const RISE: float = 0.4
+	const GOING: float = 0.35
+	const TREADS: int = 8
+	const SPEED: float = 2.0
+	const FRAMES: int = 150
+	# Well under the 6 measured, because the bar is "the feature still happens"
+	# rather than a count: the alternative reads 0.
+	const SNAPS_MIN: int = 2
+
+	var capsule: CapsuleShape3D = CapsuleShape3D.new()
+	capsule.radius = BODY_RADIUS
+	capsule.height = BODY_HEIGHT
+	capsule.margin = COLLIDER_MARGIN
+
+	var world: Node3D = _new_world()
+	var bottom: float = _add_flight_down(world, RISE, GOING, TREADS)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0, false, capsule)
+	c.step_down_height = 0.5
+	var counts: Dictionary = _count_signals(c)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(SPEED, 0.0, 0.0), FRAMES)
+
+	# The count alone would pass a body that snapped twice and then stalled on a
+	# tread, so where it finished is half the claim: the flight is walked, not just
+	# begun.
+	var down_the_flight: bool = absf(c.global_position.y - (bottom + REST_Y)) < EPS
+	_check(
+		"56 a capsule keeps its step downs",
+		counts["down"] >= SNAPS_MIN and down_the_flight,
+		(
+			"down=%d pos=%v expected >=%d over %d treads and y~%.2f - the steep-landing"
+			% [counts["down"], c.global_position, SNAPS_MIN, TREADS, bottom + REST_Y]
+			+ " check is reading a rounded bottom's corner contact and refusing"
+			+ " ordinary stairs"
+		),
+	)
+	world.queue_free()
+
+
+## The same claim as case 56 for a body the `collider` export does not describe.
+##
+## The export names one shape; the sweep tests the whole body. So a character with
+## a legitimate CylinderShape3D assigned and a rounded shape somewhere else on it
+## can have its landing judged by a contact that belongs to the rounded one, and
+## reading the export alone declares that body flat-bottomed. Measured under Jolt
+## on this flight: the step downs happen when the body's own shapes decide, and
+## every one of them is refused when the export does - the capsule failure back in
+## full, on a body whose export is exactly what the addon recommends, and
+## _resolve_margin has nothing to warn about either.
+##
+## Multi-shape characters are supported here (case 25 blocks a step with a second
+## shape), so this is an ordinary body rather than a contrived one.
+func _case_57_a_second_rounded_shape_keeps_its_step_downs() -> void:
+	const RISE: float = 0.4
+	const GOING: float = 0.35
+	const TREADS: int = 8
+	const SPEED: float = 2.0
+	const FRAMES: int = 150
+	const SNAPS_MIN: int = 2
+
+	var world: Node3D = _new_world()
+	var bottom: float = _add_flight_down(world, RISE, GOING, TREADS)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	# The rise is over the default reach, exactly as in case 56 - without this the
+	# flight is walked off rather than stepped down, and the case reads zero for a
+	# reason that has nothing to do with shapes.
+	c.step_down_height = 0.5
+
+	# A sphere hung below the cylinder, so the rounded surface is what the body
+	# stands on and what a tread corner catches. Flush with the cylinder's own
+	# bottom is not enough - measured, the flat rim still takes every contact and
+	# the case cannot tell the two gates apart on either engine.
+	var foot: CollisionShape3D = CollisionShape3D.new()
+	var sphere: SphereShape3D = SphereShape3D.new()
+	sphere.radius = BODY_RADIUS
+	sphere.margin = COLLIDER_MARGIN
+	foot.shape = sphere
+	c.add_child(foot)
+	foot.position = Vector3(0.0, -BODY_HEIGHT * 0.5, 0.0)
+
+	# The body now rests a sphere radius lower than every other case here.
+	var rest: float = BODY_HEIGHT * 0.5 + BODY_RADIUS
+	c.global_position = Vector3(0.0, rest, 0.0)
+
+	var counts: Dictionary = _count_signals(c)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(SPEED, 0.0, 0.0), FRAMES)
+
+	var down_the_flight: bool = absf(c.global_position.y - (bottom + rest)) < EPS
+	_check(
+		"57 a second rounded shape keeps its step downs",
+		counts["down"] >= SNAPS_MIN and down_the_flight,
+		(
+			"down=%d pos=%v expected >=%d over %d treads and y~%.2f - the flat-bottom"
+			% [counts["down"], c.global_position, SNAPS_MIN, TREADS, bottom + rest]
+			+ " test is reading the collider export rather than the body's shapes"
+		),
+	)
+	world.queue_free()
+
+
+## A DISABLED rounded shape must not switch the steep-landing refusal off.
+##
+## A disabled collider is still a shape owner and its shape is still readable, so
+## counting it makes the whole check optional in practice: a rig that keeps a spare
+## capsule around for crouching - toggled off, doing nothing - is a rig that gets
+## set down on a wall again. Measured on this world before the disabled owners were
+## skipped: 2 commits onto a 63 degree face, where the same body with the spare
+## shape removed refuses it.
+##
+## The enabled half is case 57's job. This is only about a shape that is not in the
+## simulation at all having a say in what the simulation is allowed to do.
+func _case_58_a_disabled_rounded_shape_does_not_disarm_the_refusal() -> void:
+	const LIP: float = 0.35
+	const STEEP: float = 63.0
+
+	var world: Node3D = _new_world()
+	var floor_top: float = _add_drop_over_face(world, 2.0, LIP, STEEP)
+	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	c.step_down_height = 0.5
+
+	var spare: CollisionShape3D = CollisionShape3D.new()
+	var capsule: CapsuleShape3D = CapsuleShape3D.new()
+	capsule.radius = BODY_RADIUS
+	capsule.height = BODY_HEIGHT
+	capsule.margin = COLLIDER_MARGIN
+	spare.shape = capsule
+	spare.disabled = true
+	c.add_child(spare)
+
+	var counts: Dictionary = _count_signals(c)
+
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES * 2)
+
+	var reached_the_floor: bool = absf(c.global_position.y - (floor_top + REST_Y)) < EPS
+	_check(
+		"58 a disabled rounded shape does not disarm the refusal",
+		counts["down"] == 0 and reached_the_floor and c.is_on_floor(),
+		(
+			"down=%d pos=%v expected down=0 and y~%.2f - a shape that is not in the"
+			% [counts["down"], c.global_position, floor_top + REST_Y]
+			+ " simulation is deciding what the simulation may commit to"
+		),
+	)
+	world.queue_free()
