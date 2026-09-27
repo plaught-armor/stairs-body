@@ -35,8 +35,8 @@ extends Node3D
 ## correctness rather than cost. cast_motion sweeps one shape RID where
 ## body_test_motion sweeps the whole body (test/diag_multishape.gd: 0.18 m apart
 ## on a two-shape body), and even on a single-shape body the substitution loses
-## steps in two separate ways (test/diag_castmotion.gd). Read that file before
-## reaching for these numbers again.
+## steps in two separate ways (test/diag_castmotion.gd). Both diagnostics live at
+## tag `gdscript-final`; read them before reaching for these numbers again.
 
 const N: int = 20000
 const RUNS: int = 7

@@ -7,7 +7,7 @@ extends Node3D
 ##
 ## Two earlier attempts measured the wrong thing and are worth not repeating.
 ## Timing across `await get_tree().physics_frame` buries a microsecond effect
-## under ~16.67 ms of scheduler wait (test/bench_alloc.gd). Calling stair_step_up
+## under ~16.67 ms of scheduler wait. Calling the step check
 ## in a tight loop on a settled body avoids the await but freezes the character
 ## in a state it never occupies while walking - the forward sweep hits there and
 ## misses when driven, so the tight loop prices a branch the game does not take.
@@ -19,8 +19,8 @@ const SETTLE: int = 30
 const WALK: float = 3.0
 const LANE: float = 3.0
 
-var _flat: Array[StairsCharacter] = []
-var _wall: Array[StairsCharacter] = []
+var _flat: Array[StairsBody] = []
+var _wall: Array[StairsBody] = []
 
 
 func _ready() -> void:
@@ -38,8 +38,8 @@ func _box(size: Vector3, centre: Vector3) -> void:
 	body.global_position = centre
 
 
-func _character(at: Vector3) -> StairsCharacter:
-	var c: StairsCharacter = StairsCharacter.new()
+func _character(at: Vector3) -> StairsBody:
+	var c: StairsBody = StairsBody.new()
 	var shape_node: CollisionShape3D = CollisionShape3D.new()
 	var cyl: CylinderShape3D = CylinderShape3D.new()
 	cyl.radius = 0.3
@@ -47,14 +47,13 @@ func _character(at: Vector3) -> StairsCharacter:
 	cyl.margin = 0.001
 	shape_node.shape = cyl
 	c.add_child(shape_node)
-	c.collider = shape_node
 	add_child(c)
 	c.global_position = at
 	return c
 
 
-func _step(group: Array[StairsCharacter], walk: Vector3) -> void:
-	for c: StairsCharacter in group:
+func _step(group: Array[StairsBody], walk: Vector3) -> void:
+	for c: StairsBody in group:
 		c.velocity = Vector3(walk.x, c.velocity.y - GRAVITY_STEP, walk.z)
 		c.desired_velocity = walk
 		c.move_and_stair_step()
@@ -63,7 +62,7 @@ func _step(group: Array[StairsCharacter], walk: Vector3) -> void:
 const GRAVITY_STEP: float = 0.16
 
 
-func _measure(label: String, group: Array[StairsCharacter], walk: Vector3) -> void:
+func _measure(label: String, group: Array[StairsBody], walk: Vector3) -> void:
 	for _i: int in SETTLE:
 		_step(group, walk)
 		await get_tree().physics_frame

@@ -3,11 +3,10 @@ extends EditorPlugin
 
 # Deliberately empty.
 #
-# Everything this addon provides is the `StairsCharacter` class, and a script
-# with a `class_name` is registered globally by the engine as soon as the file is
-# in the project - enabling a plugin has nothing to do with it. So the addon
-# works whether or not this is switched on, and switching it off does not remove
-# the node type.
+# Everything this addon provides is the `StairsBody` class, and the engine
+# registers it through its .gdextension as soon as the files are in the project -
+# enabling a plugin has nothing to do with it. So the addon works whether or not
+# this is switched on, and switching it off does not remove the node type.
 #
 # It exists so the addon appears in Project Settings > Plugins with a name, a
 # version and an author, which is how users expect to find and identify what they

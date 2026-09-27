@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the headless StairsCharacter and StairsBody suites. Exit code is the total
+# Runs the headless StairsBody suites. Exit code is the total
 # number of failures.
 #
 # Godot is not on PATH on this machine, so point GODOT at a binary if none of the
@@ -39,19 +39,22 @@ fi
 
 echo "Using $GODOT"
 
-# The global class cache lives in .godot/, so class_name StairsCharacter does
-# not resolve until the project has been imported at least once.
-if [[ ! -f "$PROJECT/.godot/global_script_class_cache.cfg" ]]; then
-	echo "Importing project (first run)..."
+# StairsBody is a GDExtension; build it first with `scons` at the repo root.
+if ! compgen -G "$PROJECT/addons/stairs-character/bin/libstairsbody.*" >/dev/null; then
+	echo "No StairsBody library in addons/stairs-character/bin. Run scons at the repo root." >&2
+	exit 127
+fi
+
+# An extension only loads once an import has listed it in .godot/, which a fresh
+# clone does not have.
+if ! grep -qs stairs_body.gdextension "$PROJECT/.godot/extension_list.cfg"; then
+	echo "Importing project to register StairsBody..."
 	"$GODOT" --headless --path "$PROJECT" --import >/dev/null
 fi
 
-# The shared StairsBody suite is generated from test_stairs.gd; see the generator.
-python3 "$PROJECT/test/gen_stairs_body_suite.py"
-
 # Every suite runs even when an earlier one fails, and the exit code is the total.
 failed=0
-for scene in test_stairs.tscn generated/test_stairs_body_shared.tscn test_stairs_body.tscn; do
+for scene in test_stairs.tscn test_stairs_body.tscn; do
 	status=0
 	"$GODOT" --headless --path "$PROJECT" "res://test/$scene" || status=$?
 	failed=$((failed + status))

@@ -1,29 +1,25 @@
 # Stairs Character
 
-A `CharacterBody3D` that walks up and down steps. It sweeps the body itself with
-`body_test_motion` rather than raycasting, so it steps on whatever the collider
-would actually fit on.
+`StairsBody` is a character body that walks up and down steps. It sweeps the body
+itself with `body_test_motion` rather than raycasting, so a character steps onto
+whatever its collider would actually fit on. It is a C++ GDExtension built on
+`AnimatableBody3D`, with its own move loop, and is cheap enough for crowds.
 
 ## Install
 
-Copy `addons/stairs-character/` into your project, **keeping the folder name**.
-That is the whole install — the `StairsCharacter` class registers itself because
-it has a `class_name`, whether or not the plugin is enabled in **Project Settings
-> Plugins**. Enabling it only makes the addon show up in that list.
+Copy `addons/stairs-character/` into your project, **keeping the folder name**:
+the library and icon paths are absolute `res://` paths. Enabling the plugin in
+**Project Settings > Plugins** is optional; it only lists the addon there.
 
-The folder name matters because the class icon is referenced by absolute path
-(`@icon("res://addons/stairs-character/...")`) and Godot has no relative form for
-it. Rename the folder and the node quietly falls back to the default icon —
-harmless, but confusing, and nothing warns you.
+The library for your platform has to be in `bin/`. Prebuilt binaries cover Linux
+x86_64, which includes Steam Deck. For anything else, build from the
+[repository](https://github.com/plaught-armor/stairs-character) with `scons`. The
+extension loads on Godot 4.6 and newer.
 
 ## Use
 
-Extend `StairsCharacter` instead of `CharacterBody3D`, assign the `collider`
-export to your `CollisionShape3D`, and call `move_and_stair_step()` where you
-would have called `move_and_slide()`:
-
 ```gdscript
-extends StairsCharacter
+extends StairsBody
 
 func _physics_process(delta: float) -> void:
     velocity.y -= gravity * delta
@@ -33,16 +29,13 @@ func _physics_process(delta: float) -> void:
     move_and_stair_step()
 ```
 
-Two things that are not optional:
+Give the body a `CollisionShape3D` child with a `CylinderShape3D`, margin around
+`0.001`. `StairsBody` is not a `CharacterBody3D`: there is no `move_and_slide()`,
+but `velocity`, `is_on_floor()`, `is_on_wall()`, `get_floor_normal()` and the
+other familiar getters are there. Its properties and signals are documented in the
+editor's built-in help.
 
-- **Use a `CylinderShape3D`.** A capsule's rounded bottom catches the top corner
-  of a step and reports a steep contact normal, which `floor_max_angle` then
-  rejects — every step-up silently fails. The addon warns at startup if the shape
-  is anything else.
-- **Keep the collider's margin low**, around `0.001`. The addon warns above
-  `0.01`. A large margin snags on step edges.
-
-Full property, signal and upgrade documentation is in the [repository
+Full documentation is in the [repository
 README](https://github.com/plaught-armor/stairs-character).
 
 ## License and provenance
@@ -53,4 +46,4 @@ This addon is a hard fork of [Andicraft/stairs-character](https://github.com/And
 maintained at [plaught-armor/stairs-character](https://github.com/plaught-armor/stairs-character).
 The stepping algorithm is Andrea Jörgensen's original work; the fork rewrote what
 surrounds it. Both copyright lines in `LICENSE` are required — keep that file
-beside these scripts in anything you ship.
+beside the addon in anything you ship.

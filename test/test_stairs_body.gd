@@ -1,7 +1,8 @@
 extends Node3D
 
-## Headless cases for StairsBody's own machinery - the parts StairsCharacter does
-## not have, so the shared suite cannot reach them.
+## Headless cases for StairsBody's own machinery: the tunnel guard, the refusal
+## cache, the loose-step rule and the rest that test_stairs.gd's cases, which
+## began as the old StairsCharacter's, were never written to reach.
 ##
 ##     godot --headless --path <repo root> res://test/test_stairs_body.tscn
 ##

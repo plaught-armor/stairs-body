@@ -1,6 +1,6 @@
 extends Node3D
 
-## Headless test harness for the StairsCharacter addon.
+## Headless test harness for the StairsBody addon.
 ##
 ##     godot --headless --path <repo root> res://test/test_stairs.tscn
 ##
@@ -10,8 +10,14 @@ extends Node3D
 ##
 ## `print` is the harness output, so the usual "no ungated print" rule (S11)
 ## does not apply here.
-
-const SUBCLASS_SCRIPT: Script = preload("res://test/subclass_character.gd")
+##
+## The cases began as the suite for StairsCharacter, the GDScript class StairsBody
+## replaced (tag `gdscript-final`). Case numbers are kept so the history lines up;
+## the gaps are cases that tested StairsCharacter-only API. Where a case's notes
+## name that class's internals - stair_step_up, its phases, move_and_slide - they
+## record why the case exists; the behaviour asserted is StairsBody's. The
+## test/diag_*.gd scripts the notes cite were StairsCharacter investigations and
+## live at that tag too.
 
 const DELTA: float = 1.0 / 60.0
 const GRAVITY: float = 9.8
@@ -33,7 +39,7 @@ const SETTLE_FRAMES: int = 15
 const WALK_FRAMES: int = 60
 
 ## Position tolerance. Wider than the collider margin because the solver leaves
-## the capsule resting a fraction above the surface.
+## the body resting a fraction above the surface.
 const EPS: float = 0.05
 
 var _passed: int = 0
@@ -47,7 +53,7 @@ func _ready() -> void:
 
 
 func _run_all() -> void:
-	print("--- StairsCharacter test run ---")
+	print("--- StairsBody test run ---")
 
 	await _case_01_step_up()
 	await _case_02_step_too_high()
@@ -55,24 +61,15 @@ func _run_all() -> void:
 	await _case_04_steep_ramp()
 	await _case_05_step_down()
 	await _case_06_airborne()
-	await _case_07_desired_velocity()
-	await _case_08_subclass()
 	await _case_09_flags_cleared()
-	await _case_10_margin_from_export()
-	await _case_11_legacy_collider_node()
-	await _case_12_subclass_notification()
 	await _case_13_step_down_bounded_by_step_height()
 	await _case_14_step_up_bounded_by_step_height()
-	await _case_15_legacy_step_height_property()
 	await _case_16_step_up_signals()
 	await _case_17_no_signal_when_blocked()
 	await _case_18_step_down_signals()
 	await _case_19_walkable_ramp()
 	await _case_20_step_at_the_top_of_a_ramp()
 	await _case_21_ceiling_flush_on_the_head()
-	await _case_22_vertical_intent_is_ignored()
-	await _case_23_legacy_step_height_rejects_non_numbers()
-	await _case_24_grounded_tracks_the_previous_frame()
 	await _case_25_second_collision_shape_blocks_the_step()
 	await _case_26_embedded_character_is_pushed_out()
 	await _case_27_force_stair_step_catches_a_ledge_airborne()
@@ -84,18 +81,12 @@ func _run_all() -> void:
 	await _case_33_zero_smoothing_keeps_the_visual_rigid()
 	await _case_34_a_teleport_sized_jump_is_not_smoothed()
 	await _case_35_no_smooth_node_leaves_smoothing_off()
-	await _case_36_smoothing_setup_does_not_kill_a_subclass_process()
 	await _case_37_steps_up_from_a_standstill_against_the_face()
-	await _case_38_backpressure_does_not_seat_against_the_push()
 	await _case_39_climbs_while_pressed_against_a_wall()
 	await _case_40_climbs_at_a_high_tick_rate()
 	await _case_41_a_step_does_not_lurch_the_body_forward()
 	await _case_42_step_down_height_bounds_the_snap()
 	await _case_43_step_down_height_reaches_past_the_climb()
-	await _case_44_one_slide_iteration_is_the_old_single_sweep()
-	await _case_45_a_zero_forward_floor_is_the_old_unfloored_leg()
-	await _case_46_split_move_steps_up_and_snaps_down()
-	await _case_47_split_move_rides_a_platform_once()
 	await _case_48_climbs_stairs_that_ride_a_moving_platform()
 	await _case_49_seats_the_horizontal_once_on_a_moving_platform()
 	await _case_50_climbs_stairs_on_a_descending_lift()
@@ -123,7 +114,7 @@ func _check(case_name: String, ok: bool, detail: String) -> void:
 
 ## Drives one character for `frames` physics frames and returns the highest
 ## y its origin reached, so cases can assert on a transient step-up.
-func _simulate(c: StairsCharacter, horizontal: Vector3, frames: int) -> float:
+func _simulate(c: StairsBody, horizontal: Vector3, frames: int) -> float:
 	var peak: float = -INF
 	for _i: int in frames:
 		await get_tree().physics_frame
@@ -216,25 +207,13 @@ func _add_flight_down(world: Node3D, rise: float, going: float, treads: int) -> 
 	return bottom
 
 
-## `legacy_node_name` builds the character the way upstream scenes do — a child
-## literally called "Collider" and nothing assigned to the export — so the
-## compatibility fallback in `_resolve_margin` gets exercised too.
-##
 ## `shape` overrides the cylinder above for the cases that are about the collider
 ## itself rather than about the world. Everything else in the body is unchanged,
 ## so a case that swaps it is comparing two shapes and nothing else.
-func _add_character(
-	world: Node3D,
-	script_res: Script,
-	start_x: float,
-	legacy_node_name: bool = false,
-	shape: Shape3D = null,
-) -> StairsCharacter:
-	var c: StairsCharacter = script_res.new() as StairsCharacter
+func _add_character(world: Node3D, start_x: float, shape: Shape3D = null) -> StairsBody:
+	var c: StairsBody = StairsBody.new()
 	var shape_node: CollisionShape3D = CollisionShape3D.new()
 	shape_node.name = "Shape"
-	if legacy_node_name:
-		shape_node.name = "Collider"
 	var body_shape: Shape3D = shape
 	if body_shape == null:
 		var cylinder: CylinderShape3D = CylinderShape3D.new()
@@ -244,8 +223,6 @@ func _add_character(
 		body_shape = cylinder
 	shape_node.shape = body_shape
 	c.add_child(shape_node)
-	if not legacy_node_name:
-		c.collider = shape_node
 	world.add_child(c)
 	c.global_position = Vector3(start_x, REST_Y, 0.0)
 	return c
@@ -257,7 +234,7 @@ func _case_01_step_up() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
 	_add_step(world, 0.2)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
@@ -275,7 +252,7 @@ func _case_02_step_too_high() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
 	_add_step(world, 0.6)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	var peak: float = await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
@@ -294,7 +271,7 @@ func _case_03_low_ceiling() -> void:
 	_add_step(world, 0.2)
 	# Head sits at y = 1.8; leave only 0.15 of headroom, less than the step.
 	_add_box(world, Vector3(4.0, 1.0, 8.0), Vector3(2.0, 2.45, 0.0))
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	var peak: float = await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
@@ -312,7 +289,7 @@ func _case_04_steep_ramp() -> void:
 	_add_ground(world, 1.0)
 	# 70 degrees, well past the default floor_max_angle of 45.
 	_add_box(world, Vector3(4.0, 1.0, 8.0), Vector3(2.2, 0.0, 0.0), -70.0)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	var peak: float = await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
@@ -330,7 +307,7 @@ func _case_05_step_down() -> void:
 	# Upper slab top at y = 0 ending at x = 2, lower slab top at y = -0.2.
 	_add_box(world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
 	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.7, 0.0))
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
@@ -348,7 +325,7 @@ func _case_06_airborne() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
 	_add_step(world, 0.2)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	c.velocity.y = 6.0
@@ -362,72 +339,13 @@ func _case_06_airborne() -> void:
 	world.queue_free()
 
 
-func _case_07_desired_velocity() -> void:
-	var world: Node3D = _new_world()
-	_add_ground(world, 1.0)
-	_add_step(world, 0.2)
-	# Parked with the capsule just touching the step face at x = 1.0.
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 1.0 - BODY_RADIUS - 0.005)
-
-	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
-
-	# `stair_step_up` is exercised on its own rather than through
-	# `move_and_stair_step`. Driving the whole frame would prove nothing here: the
-	# step-up does fire and raises the body onto the step, but with no actual
-	# velocity `move_and_slide` cannot carry it forward, so `stair_step_down`
-	# drops it back onto the ground it is still standing over. Calling the step
-	# check directly isolates the fallback, which is the thing under test.
-	await get_tree().physics_frame
-	c.velocity = Vector3(0.0, -GRAVITY * DELTA, 0.0)
-
-	# Control: no actual velocity and no intent means no step check at all.
-	c.desired_velocity = Vector3.ZERO
-	c.stair_step_up()
-	var idle_y: float = c.global_position.y
-
-	# Same state, but the controller expresses where it wants to go.
-	c.desired_velocity = Vector3(WALK_SPEED, 0.0, 0.0)
-	c.stair_step_up()
-	var intent_y: float = c.global_position.y
-
-	_check(
-		"07 desired_velocity drives the step check at zero velocity",
-		absf(idle_y - REST_Y) < EPS and intent_y > REST_Y + 0.1,
-		"idle_y=%.3f (expected ~%.2f), intent_y=%.3f (expected > %.2f)"
-		% [idle_y, REST_Y, intent_y, REST_Y + 0.1],
-	)
-	world.queue_free()
-
-
-func _case_08_subclass() -> void:
-	var world: Node3D = _new_world()
-	_add_ground(world, 1.0)
-	_add_step(world, 0.2)
-	var c: StairsCharacter = _add_character(world, SUBCLASS_SCRIPT, 0.0)
-
-	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
-	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
-
-	var on_step: bool = absf(c.global_position.y - (REST_Y + 0.2)) < EPS
-	_check(
-		"08 subclass overriding _ready and _physics_process still steps",
-		on_step and c.global_position.x > 1.0,
-		(
-			"pos=%v expected y~%.2f, x>1.0 | grounded=%s — a false grounded here"
-			% [c.global_position, REST_Y + 0.2, c.grounded]
-			+ " means the parent's _physics_process never ran (PLAN section 0)"
-		),
-	)
-	world.queue_free()
-
-
 ## Both flags are consume-then-clear, and move_and_stair_step is the only thing
 ## that clears them now that _physics_process is gone. Upstream documented
 ## force_stair_step as resetting after the frame but never reset it.
 func _case_09_flags_cleared() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 
@@ -447,84 +365,10 @@ func _case_09_flags_cleared() -> void:
 	world.queue_free()
 
 
-## The margin is read from the assigned `collider` export, and it is resolved on
-## first use rather than in `_ready` — so a subclass that defines its own `_ready`
-## must not be able to leave it at 0.0. Same section 0 principle as case 08.
-func _case_10_margin_from_export() -> void:
-	var world: Node3D = _new_world()
-	_add_ground(world, 1.0)
-	var c: StairsCharacter = _add_character(world, SUBCLASS_SCRIPT, 0.0)
-
-	# Resolved off NOTIFICATION_READY, which the subclass cannot shadow, so it is
-	# already correct here without a single move_and_stair_step call.
-	# Read through get() because the query object is private and the linter has no
-	# per-line ignore; the resolved margin is what this case exists to assert.
-	var margin_at_ready: float = _resolved_margin(c)
-	await _simulate(c, Vector3.ZERO, 2)
-	var margin_after: float = _resolved_margin(c)
-
-	_check(
-		"10 collider margin resolves from the export under a subclass _ready",
-		is_equal_approx(margin_at_ready, COLLIDER_MARGIN),
-		(
-			"at ready=%.4f after stepping=%.4f expected %.4f"
-			% [margin_at_ready, margin_after, COLLIDER_MARGIN]
-		),
-	)
-	world.queue_free()
-
-
-## Upstream scenes have no export to assign — they rely on the child being named
-## "Collider". That fallback has to keep working or every existing scene breaks.
-func _case_11_legacy_collider_node() -> void:
-	var world: Node3D = _new_world()
-	_add_ground(world, 1.0)
-	_add_step(world, 0.2)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0, true)
-
-	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
-	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
-
-	var on_step: bool = absf(c.global_position.y - (REST_Y + 0.2)) < EPS
-	var margin: float = _resolved_margin(c)
-	_check(
-		"11 legacy $Collider node still resolves the margin",
-		on_step and is_equal_approx(margin, COLLIDER_MARGIN),
-		"pos=%v margin=%.4f expected y~%.2f" % [c.global_position, margin, REST_Y + 0.2],
-	)
-	world.queue_free()
-
-
-## The refactor that moved margin resolution off `_ready` and onto
-## NOTIFICATION_READY rests on one empirical property of the engine: Godot
-## dispatches `_notification` to every script in the inheritance chain rather
-## than letting the most-derived override replace it, so a subclass cannot
-## shadow it the way it shadows `_ready`. That is the whole justification, and
-## it is a property of a dev build, so it gets pinned by a test: both bodies
-## must run, the base one having resolved the margin.
-func _case_12_subclass_notification() -> void:
-	var world: Node3D = _new_world()
-	_add_ground(world, 1.0)
-	var c: StairsCharacter = _add_character(world, SUBCLASS_SCRIPT, 0.0)
-
-	var margin: float = _resolved_margin(c)
-	var subclass_ran: int = c.get(&"custom_notifications")
-
-	_check(
-		"12 subclass _notification does not shadow the parent's",
-		is_equal_approx(margin, COLLIDER_MARGIN) and subclass_ran == 1,
-		(
-			"margin=%.4f subclass_notifications=%d expected %.4f and 1"
-			% [margin, subclass_ran, COLLIDER_MARGIN]
-		),
-	)
-	world.queue_free()
-
-
 ## Counts the frames the character spent off the floor. A successful step down
 ## keeps it planted the whole way; a rejected one lets it free-fall over the
 ## edge, which is the difference the two cases below turn on.
-func _simulate_counting_airborne(c: StairsCharacter, horizontal: Vector3, frames: int) -> int:
+func _simulate_counting_airborne(c: StairsBody, horizontal: Vector3, frames: int) -> int:
 	var airborne: int = 0
 	for _i: int in frames:
 		await get_tree().physics_frame
@@ -546,7 +390,7 @@ func _case_13_step_down_bounded_by_step_height() -> void:
 	var world: Node3D = _new_world()
 	_add_box(world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
 	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.7, 0.0))
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	c.step_height = 0.05
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
@@ -576,7 +420,7 @@ func _case_14_step_up_bounded_by_step_height() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
 	_add_step(world, 0.6)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	c.step_height = 0.7
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
@@ -591,37 +435,7 @@ func _case_14_step_up_bounded_by_step_height() -> void:
 	world.queue_free()
 
 
-## Scenes authored against the old `_step_height` name must not lose their
-## tuning on upgrade. Godot drops saved properties that no longer exist on
-## the script without saying anything, so the addon intercepts the old name in
-## `_set` - which is the same path a scene load takes when it applies a stored
-## property that has no matching field.
-func _case_15_legacy_step_height_property() -> void:
-	var world: Node3D = _new_world()
-	_add_ground(world, 1.0)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
-
-	c.set(&"_step_height", 0.5)
-
-	_check(
-		"15 the old _step_height property name still applies",
-		is_equal_approx(c.step_height, 0.5),
-		"step_height=%.3f expected 0.5" % c.step_height,
-	)
-	world.queue_free()
-
-
-## Counts every step signal a character emits. A Dictionary rather than plain
-## locals because a lambda captures locals by value (H6) - the container is a
-## reference, so the increments are visible to the caller.
-## The margin lives on the shared motion-test parameters, which is the only copy
-## of it the addon keeps.
-func _resolved_margin(c: StairsCharacter) -> float:
-	var params: PhysicsTestMotionParameters3D = c.get(&"_params")
-	return params.margin
-
-
-func _count_signals(c: StairsCharacter) -> Dictionary:
+func _count_signals(c: StairsBody) -> Dictionary:
 	var counts: Dictionary = { "any": 0, "up": 0, "down": 0 }
 	c.stepped.connect(
 		func() -> void:
@@ -642,7 +456,7 @@ func _case_16_step_up_signals() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
 	_add_step(world, 0.2)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	var counts: Dictionary = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
@@ -665,7 +479,7 @@ func _case_17_no_signal_when_blocked() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
 	_add_step(world, 0.6)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	var counts: Dictionary = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
@@ -683,7 +497,7 @@ func _case_18_step_down_signals() -> void:
 	var world: Node3D = _new_world()
 	_add_box(world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
 	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.7, 0.0))
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	var counts: Dictionary = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
@@ -736,7 +550,7 @@ func _case_19_walkable_ramp() -> void:
 	# A 30 degree slab, inside the default floor_max_angle of 45, sunk so its
 	# lower edge meets the ground rather than presenting an end face to walk into.
 	_add_box(world, Vector3(12.0, 0.5, 8.0), Vector3(6.2, 2.78, 0.0), 30.0)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	var counts: Dictionary = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
@@ -776,7 +590,7 @@ func _case_20_step_at_the_top_of_a_ramp() -> void:
 	# Plateau at y = 1, then a 0.2 step up to y = 1.2 partway along it.
 	_add_box(world, Vector3(5.3, 2.0, 8.0), Vector3(5.35, 0.0, 0.0))
 	_add_box(world, Vector3(3.0, 2.0, 8.0), Vector3(6.5, 0.2, 0.0))
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	var counts: Dictionary = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
@@ -804,7 +618,7 @@ func _case_21_ceiling_flush_on_the_head() -> void:
 	_add_step(world, 0.2)
 	# Head is at y = 1.8, so this sits directly on it.
 	_add_box(world, Vector3(6.0, 1.0, 8.0), Vector3(2.0, 2.3, 0.0))
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	var counts: Dictionary = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
@@ -814,144 +628,6 @@ func _case_21_ceiling_flush_on_the_head() -> void:
 		"21 a ceiling flush on the head blocks the step",
 		peak < REST_Y + EPS and counts["up"] == 0,
 		"peak=%.3f up=%d expected no rise and no stepped_up" % [peak, counts["up"]],
-	)
-	world.queue_free()
-
-
-## Case 7 proves the `desired_velocity` fallback works when the controller hands
-## over a flat vector. This is the same world with a vertical component in it,
-## which is what a controller that assigns its whole movement intent - input plus
-## gravity - to `desired_velocity` produces, the usage the README describes.
-##
-## The fallback has to be flattened the way actual velocity already is. Left
-## alone, a downward component aims the first sweep forward *and down*, so it
-## reaches the ground before the step face, the ground reports a walkable normal,
-## and the walkable-slope bail throws the step away. Measured on this world:
-## intent (3, -1, 0) rose 0.0000 against (3, 0, 0)'s 0.2007.
-##
-## The purely vertical arm is the other half: a vector with no horizontal
-## component at all is not intent to move anywhere, so it has to fall through the
-## zero-check rather than run four sweeps on a straight-up test velocity.
-func _case_22_vertical_intent_is_ignored() -> void:
-	var rises: PackedFloat32Array = []
-	for intent: Vector3 in [
-		Vector3(WALK_SPEED, -1.0, 0.0),
-		Vector3(WALK_SPEED, 3.0, 0.0),
-		Vector3(0.0, -5.0, 0.0),
-	]:
-		var world: Node3D = _new_world()
-		_add_ground(world, 1.0)
-		_add_step(world, 0.2)
-		# Parked with the cylinder just touching the step face, as in case 7.
-		var c: StairsCharacter = _add_character(world, StairsCharacter, 1.0 - BODY_RADIUS - 0.005)
-
-		await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
-		await get_tree().physics_frame
-		c.velocity = Vector3(0.0, -GRAVITY * DELTA, 0.0)
-
-		var before: float = c.global_position.y
-		c.desired_velocity = intent
-		c.stair_step_up()
-		rises.append(c.global_position.y - before)
-		world.queue_free()
-
-	_check(
-		"22 a vertical component in desired_velocity does not change the step",
-		rises[0] > 0.1 and rises[1] > 0.1 and absf(rises[2]) < EPS,
-		("rises=%s expected the two forward intents to step and the vertical one not to" % [rises]),
-	)
-
-
-## Case 15 covers the legacy `_step_height` name arriving with the float a scene
-## would have stored. This is the same path fed something that is not a number,
-## which a hand-edited scene or any caller reaching the property by name can do.
-##
-## `step_height` is a typed float, so the shim has to refuse a non-number rather
-## than assign it. Note what this case does and does not pin: the resulting
-## `step_height` is the same either way, because an unrefused assignment aborts
-## `_set` on a type error and leaves the default in place. What the refusal buys
-## is the reporting, which this harness cannot assert on - a bare "Trying to
-## assign value of type 'String' to a variable of type 'float'", naming neither
-## the addon nor the property, becomes an error that names both.
-##
-## So this case is a behaviour pin, not a regression test: it fails if a future
-## edit makes a bad value clobber `step_height` with 0.0, or makes a good int
-## stop applying.
-func _case_23_legacy_step_height_rejects_non_numbers() -> void:
-	var world: Node3D = _new_world()
-	_add_ground(world, 1.0)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
-
-	var default_height: float = c.step_height
-	c.set(&"_step_height", "nonsense")
-	var after_string: float = c.step_height
-
-	# An int is a number and still means what the designer typed, so it applies.
-	c.set(&"_step_height", 1)
-	var after_int: float = c.step_height
-
-	_check(
-		"23 the legacy _step_height name refuses a non-numeric value",
-		is_equal_approx(after_string, default_height) and is_equal_approx(after_int, 1.0),
-		(
-			"after_string=%.3f (expected the %.3f default kept), after_int=%.3f (expected 1.0)"
-			% [after_string, default_height, after_int]
-		),
-	)
-	world.queue_free()
-
-
-## `grounded` is documented as the ground state the addon sees, in place of
-## `is_on_floor()`. This pins *which* frame's state that is, because the two are
-## not interchangeable and the difference is invisible until a character crosses
-## an edge.
-##
-## `move_and_stair_step` refreshes both flags at the top, before it moves
-## anything, so after the call `grounded` holds `is_on_floor()` as it stood at
-## the start of this frame - the result of last frame's movement - and never this
-## frame's. `was_grounded` is the frame before that. Measured walking off a
-## ledge: the frame `is_on_floor()` first read false, `grounded` still read true,
-## and it flipped on the following frame.
-##
-## That lag is deliberate rather than incidental. `stair_step_up` runs before
-## this frame's `move_and_slide`, so start-of-frame ground state is the correct
-## input for it, and `stair_step_down` wants the frame before that, which is what
-## `was_grounded` is for.
-func _case_24_grounded_tracks_the_previous_frame() -> void:
-	var world: Node3D = _new_world()
-	# Ground stops at x = 1.0, so the character eventually walks off the end.
-	_add_ground(world, 1.0)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
-
-	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
-
-	var lagged_every_frame: bool = true
-	var saw_the_edge: bool = false
-	var previous_floor: bool = c.is_on_floor()
-	for _i: int in 60:
-		await get_tree().physics_frame
-		c.velocity.x = WALK_SPEED
-		c.velocity.y -= GRAVITY * DELTA
-		c.desired_velocity = Vector3(WALK_SPEED, 0.0, 0.0)
-		c.move_and_stair_step()
-
-		if c.grounded != previous_floor:
-			lagged_every_frame = false
-		# The frame the two disagree is the edge crossing, and the reason this
-		# case exists - without it the assertion above passes on a character
-		# that never leaves the ground.
-		if c.grounded != c.is_on_floor():
-			saw_the_edge = true
-		previous_floor = c.is_on_floor()
-
-	_check(
-		"24 grounded holds the previous frame's is_on_floor",
-		lagged_every_frame and saw_the_edge,
-		(
-			"lagged_every_frame=%s saw_the_edge=%s — expected grounded to track the"
-			% [lagged_every_frame, saw_the_edge]
-			+ " previous frame across a ledge the character actually walks off"
-		),
 	)
 	world.queue_free()
 
@@ -979,7 +655,7 @@ func _case_25_second_collision_shape_blocks_the_step() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
 	_add_step(world, 0.2)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 
 	# A second shape sitting on top of the head, from y = 1.8 to y = 2.3.
 	var extra: CollisionShape3D = CollisionShape3D.new()
@@ -1016,7 +692,7 @@ func _case_26_embedded_character_is_pushed_out() -> void:
 	# The step face is at x = 1.0 and its top at y = 0.2. Start the body past
 	# the face with its feet below the top, so the lowest 0.2 of the cylinder
 	# begins inside the step.
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 1.2)
+	var c: StairsBody = _add_character(world, 1.2)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
@@ -1051,15 +727,15 @@ func _case_27_force_stair_step_catches_a_ledge_airborne() -> void:
 	# Airborne over the pit, feet at y = 0.15 - nothing underneath, and 0.15
 	# below the ledge top, so the ledge is within step_height but the body is not
 	# standing on anything. This is the wall-jump snag the flag was written for.
-	var caught: StairsCharacter = _add_character(world, StairsCharacter, 0.5)
+	var caught: StairsBody = _add_character(world, 0.5)
 	caught.global_position.y = REST_Y + 0.15
-	var dropped: StairsCharacter = _add_character(world, StairsCharacter, 0.5)
+	var dropped: StairsBody = _add_character(world, 0.5)
 	dropped.global_position.z = 3.0
 	dropped.global_position.y = REST_Y + 0.15
 
 	for _i: int in 12:
 		await get_tree().physics_frame
-		for c: StairsCharacter in [caught, dropped]:
+		for c: StairsBody in [caught, dropped]:
 			c.velocity.x = WALK_SPEED
 			c.velocity.y -= GRAVITY * DELTA
 			c.desired_velocity = Vector3(WALK_SPEED, 0.0, 0.0)
@@ -1106,7 +782,7 @@ func _case_28_a_step_costs_no_stalled_frame() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
 	_add_step(world, 0.2)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	var counts: Dictionary = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
@@ -1178,7 +854,7 @@ func _case_29_a_clamped_rise_never_sinks_the_character() -> void:
 		Vector3(2.0, REST_Y + BODY_HEIGHT * 0.5 + 0.05 + 0.5, 0.0),
 	)
 
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 2.0)
+	var c: StairsBody = _add_character(world, 2.0)
 	c.step_height = 0.3
 
 	await _simulate(c, Vector3.ZERO, 2)
@@ -1220,7 +896,7 @@ func _case_29_a_clamped_rise_never_sinks_the_character() -> void:
 	var control_world: Node3D = _new_world()
 	_add_ground(control_world, 1.0)
 	_add_step(control_world, 0.2)
-	var control: StairsCharacter = _add_character(control_world, StairsCharacter, 0.0)
+	var control: StairsBody = _add_character(control_world, 0.0)
 	var control_counts: Dictionary = _count_signals(control)
 	await _simulate(control, Vector3.ZERO, SETTLE_FRAMES)
 	await _simulate(control, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
@@ -1260,7 +936,7 @@ func _case_30_snap_down_reach_is_exactly_step_height() -> void:
 	var world: Node3D = _new_world()
 	_add_box(world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
 	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.62, 0.0))
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	c.step_height = 0.05
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
@@ -1286,7 +962,7 @@ func _case_30_snap_down_reach_is_exactly_step_height() -> void:
 ## assigns the export after _add_character has already added the body, so that
 ## one-time setup is re-run explicitly here; it only records the rest Y and
 ## enables processing.
-func _attach_smooth_node(c: StairsCharacter, rest_y: float, smoothing: float) -> Node3D:
+func _attach_smooth_node(c: StairsBody, rest_y: float, smoothing: float) -> Node3D:
 	var cam: Node3D = Node3D.new()
 	cam.name = "SmoothPivot"
 	cam.position = Vector3(0.0, rest_y, 0.0)
@@ -1298,7 +974,7 @@ func _attach_smooth_node(c: StairsCharacter, rest_y: float, smoothing: float) ->
 
 
 ## Reads the private visual offset the decay chases back to rest.
-func _smooth_offset(c: StairsCharacter) -> float:
+func _smooth_offset(c: StairsBody) -> float:
 	return c.get(&"_smooth_offset_y")
 
 
@@ -1311,7 +987,7 @@ func _case_31_step_up_eases_the_visual_down_then_home() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
 	_add_step(world, 0.2)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	var cam: Node3D = _attach_smooth_node(c, 0.5, 20.0)
 
 	# Sampled at the emit, before any decay, so it is the full push.
@@ -1352,7 +1028,7 @@ func _case_32_step_down_eases_the_visual_up() -> void:
 	var world: Node3D = _new_world()
 	_add_box(world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
 	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.7, 0.0))
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	_attach_smooth_node(c, 0.0, 20.0)
 
 	var offset_at_step: PackedFloat64Array = [0.0]
@@ -1382,7 +1058,7 @@ func _case_33_zero_smoothing_keeps_the_visual_rigid() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
 	_add_step(world, 0.2)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	var cam: Node3D = _attach_smooth_node(c, 0.0, 0.0)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
@@ -1409,7 +1085,7 @@ func _case_33_zero_smoothing_keeps_the_visual_rigid() -> void:
 func _case_34_a_teleport_sized_jump_is_not_smoothed() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	_attach_smooth_node(c, 0.0, 20.0)
 	c.step_height = 0.33
 
@@ -1436,7 +1112,7 @@ func _case_34_a_teleport_sized_jump_is_not_smoothed() -> void:
 func _case_35_no_smooth_node_leaves_smoothing_off() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 
 	# _init_step_smoothing runs at NOTIFICATION_READY with smooth_node still null.
 	var processing_off: bool = not c.is_processing()
@@ -1447,36 +1123,6 @@ func _case_35_no_smooth_node_leaves_smoothing_off() -> void:
 		"35 no smooth_node leaves smoothing off",
 		processing_off and no_op,
 		"is_processing=%s offset=%.4f (expected off and 0)" % [c.is_processing(), _smooth_offset(c)],
-	)
-	world.queue_free()
-
-
-## The smoothing setup turns idle processing ON, never off. A subclass that
-## defines its own _process has processing auto-enabled by the engine; the base's
-## _init_step_smoothing runs after that at NOTIFICATION_READY, and must not switch
-## it back off when smooth_node is unassigned - doing so would silently kill the
-## subclass _process, the same shadowing trap the _notification hooks exist to
-## dodge. This is the regression pin for that fix: the subclass here defines
-## _process and assigns no smooth_node, the documented "off" state.
-func _case_36_smoothing_setup_does_not_kill_a_subclass_process() -> void:
-	var world: Node3D = _new_world()
-	_add_ground(world, 1.0)
-	var c: StairsCharacter = _add_character(world, SUBCLASS_SCRIPT, 0.0)
-
-	# NOTIFICATION_READY has already fired inside _add_character, so if the base
-	# had disabled processing the subclass _process would already be dead.
-	var still_processing: bool = c.is_processing()
-	await get_tree().process_frame
-	await get_tree().process_frame
-	var subclass_ticked: int = c.get(&"custom_process_frames")
-
-	_check(
-		"36 smoothing setup does not disable a subclass _process",
-		still_processing and subclass_ticked > 0,
-		(
-			"is_processing=%s custom_process_frames=%d — expected the subclass _process to keep running"
-			% [still_processing, subclass_ticked]
-		),
 	)
 	world.queue_free()
 
@@ -1502,7 +1148,7 @@ func _case_37_steps_up_from_a_standstill_against_the_face() -> void:
 	_add_ground(world, 1.0)
 	_add_step(world, 0.2)
 	# Parked flush against the step face at x = 1.0.
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 1.0 - BODY_RADIUS - 0.002)
+	var c: StairsBody = _add_character(world, 1.0 - BODY_RADIUS - 0.002)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 
@@ -1581,7 +1227,7 @@ func _walk_beside_a_wall(push: Vector3) -> Vector3:
 	# sideways push holds contact without ever embedding the body.
 	_add_box(world, Vector3(20.0, 6.0, 0.5), Vector3(0.0, 3.0, BODY_RADIUS + 0.25))
 
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	await _simulate(c, push, WALK_FRAMES)
 
 	var where: Vector3 = c.global_position
@@ -1612,7 +1258,7 @@ func _case_40_climbs_at_a_high_tick_rate() -> void:
 	# Started part way in rather than at the far end: where the body first meets
 	# the face decides how much of the probe is left over, and this offset is the
 	# one measured stuck at this rate before the floor existed.
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.4)
+	var c: StairsBody = _add_character(world, 0.4)
 
 	# Four times the frames for four times the rate, here and in the walk below,
 	# so both cover the same simulated time as every other case.
@@ -1663,7 +1309,7 @@ func _case_41_a_step_does_not_lurch_the_body_forward() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
 	_add_step(world, 0.2)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 
@@ -1699,52 +1345,6 @@ func _case_41_a_step_does_not_lurch_the_body_forward() -> void:
 	world.queue_free()
 
 
-## Guards the intent-probe against backpressure. When velocity opposes the held
-## intent - knockback, an explosion, a shove into the step while forward is still
-## pressed - intent is the larger vector, so a naive "probe the bigger one" would
-## seat the body forward onto the step while move_and_slide carries it backward,
-## popping it on and off the lip every frame. The dot < 0 guard keeps velocity the
-## trusted signal there, leaving the shove to move_and_slide as before.
-##
-## Driven one frame in isolation, like case 07: with velocity pointing away from
-## the step the probe must find nothing and leave the body where it is. Before the
-## guard, the forward intent probed forward, found the step and seated the body
-## onto it - the pop this pins against. The standstill fix is untouched: a
-## wall-pinned near-zero velocity still points forward, dots positive with intent,
-## and falls through to the intent probe (case 37 covers that).
-func _case_38_backpressure_does_not_seat_against_the_push() -> void:
-	var world: Node3D = _new_world()
-	_add_ground(world, 1.0)
-	_add_step(world, 0.2)
-	# Flush against the step face, the same standstill start as case 37.
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 1.0 - BODY_RADIUS - 0.002)
-
-	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
-
-	await get_tree().physics_frame
-	c.grounded = true
-	# Being shoved back off the step while the player still holds forward. Intent is
-	# the larger vector; the guard must not let it seat the body against the push.
-	c.velocity = Vector3(-2.0, -GRAVITY * DELTA, 0.0)
-	c.desired_velocity = Vector3(WALK_SPEED, 0.0, 0.0)
-	var before: Vector3 = c.global_position
-	c.stair_step_up()
-
-	# stair_step_up commits only Y and X/Z, never touching a body it found no step
-	# for. The probe ran backward, found nothing, and left the body put.
-	var stayed: bool = c.global_position.is_equal_approx(before)
-	_check(
-		"38 backpressure does not seat the body against the push",
-		stayed,
-		(
-			"pos went %v -> %v — a velocity opposing intent seated the body forward,"
-			% [before, c.global_position]
-			+ " the backpressure pop the dot guard exists to stop"
-		),
-	)
-	world.queue_free()
-
-
 ## The world of case 05 - a 0.2 m drop the default snaps onto - with the snap
 ## given its own shorter reach. The climb is untouched at 0.33, so anything that
 ## resolved the reach off step_height keeps snapping and this fails.
@@ -1755,7 +1355,7 @@ func _case_42_step_down_height_bounds_the_snap() -> void:
 	var world: Node3D = _new_world()
 	_add_box(world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
 	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.7, 0.0))
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	# The climb stays at the 0.33 default. Only the reach down is shortened, and
 	# only past what the drop needs.
 	c.step_down_height = 0.1
@@ -1789,7 +1389,7 @@ func _case_43_step_down_height_reaches_past_the_climb() -> void:
 	var world: Node3D = _new_world()
 	_add_box(world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
 	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.8, 0.0))
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	c.step_height = 0.1
 	c.step_down_height = 0.5
 
@@ -1803,189 +1403,6 @@ func _case_43_step_down_height_reaches_past_the_climb() -> void:
 		(
 			"pos=%v on_floor=%s expected y~%.2f - the snap was capped at step_height"
 			% [c.global_position, c.is_on_floor(), REST_Y - 0.3]
-		),
-	)
-	world.queue_free()
-
-
-## Turning the slide loop down to one iteration is exactly the single sweep the
-## class shipped before, so case 39's wall hug must fail again. Pins that the
-## export is wired to the loop rather than decorative.
-func _case_44_one_slide_iteration_is_the_old_single_sweep() -> void:
-	var world: Node3D = _new_world()
-	_add_ground(world, 1.0)
-	_add_step(world, 0.2)
-	_add_box(world, Vector3(20.0, 6.0, 0.5), Vector3(0.0, 3.0, BODY_RADIUS + 0.25))
-
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
-	c.step_slide_iterations = 1
-	await _simulate(c, Vector3(WALK_SPEED, 0.0, WALK_SPEED), WALK_FRAMES)
-
-	var climbed: bool = absf(c.global_position.y - (REST_Y + 0.2)) < EPS
-	_check(
-		"44 one slide iteration is the old single sweep",
-		not climbed,
-		(
-			"pos=%v climbed with the slide loop turned off, so case 39 is passing for"
-			% c.global_position
-			+ " some reason other than the slide and step_slide_iterations is not wired"
-		),
-	)
-	world.queue_free()
-
-
-## The same wiring check for the other knob: zero the forward floor and case 40's
-## tick rate stalls again, which is the behaviour the floor was added to remove.
-func _case_45_a_zero_forward_floor_is_the_old_unfloored_leg() -> void:
-	const RATE: int = 240
-	var original_rate: int = Engine.physics_ticks_per_second
-	Engine.physics_ticks_per_second = RATE
-	var delta: float = 1.0 / float(RATE)
-
-	var world: Node3D = _new_world()
-	_add_ground(world, 1.0)
-	_add_step(world, 0.2)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.4)
-	c.min_step_forward = 0.0
-
-	for _i: int in SETTLE_FRAMES * 4:
-		await get_tree().physics_frame
-		c.velocity.y -= GRAVITY * delta
-		c.move_and_stair_step()
-
-	for _i: int in WALK_FRAMES * 4:
-		await get_tree().physics_frame
-		c.velocity.x = WALK_SPEED
-		c.velocity.y -= GRAVITY * delta
-		c.desired_velocity = Vector3(WALK_SPEED, 0.0, 0.0)
-		c.move_and_stair_step()
-
-	var climbed: bool = absf(c.global_position.y - (REST_Y + 0.2)) < EPS
-	Engine.physics_ticks_per_second = original_rate
-	_check(
-		"45 a zero forward floor is the old unfloored leg",
-		not climbed,
-		(
-			"pos=%v climbed at %d Hz with the floor removed, so case 40 is passing for"
-			% [c.global_position, RATE]
-			+ " some reason other than the floor and min_step_forward is not wired"
-		),
-	)
-	world.queue_free()
-
-
-## split_move replaces the single combined move_and_slide with a horizontal pass
-## and a vertical one, so it changes how every frame resolves rather than only the
-## ones near a step. This is the no-regression pin: the two behaviours the class
-## exists for must still happen with it on.
-##
-## Deliberately not a pin on what the split is FOR. Measured on a staircase run at
-## speed (test/diag_faststairs.gd) the split does not remove airborne frames -
-## there were none to remove, on either setting - what it removes is the ground
-## lost to the stairs: a 8 m/s climb covers 12.00 m with the split against 11.57 m
-## without, and a 14 m/s one 21.00 m against 20.30 m, the full free-run distance in
-## both split cases. That is a speed-retention difference, worth having and worth
-## measuring on your own geometry, but too tied to tread size to pin here.
-func _case_46_split_move_steps_up_and_snaps_down() -> void:
-	var up_world: Node3D = _new_world()
-	_add_ground(up_world, 1.0)
-	_add_step(up_world, 0.2)
-	var climber: StairsCharacter = _add_character(up_world, StairsCharacter, 0.0)
-	climber.split_move = true
-
-	await _simulate(climber, Vector3.ZERO, SETTLE_FRAMES)
-	await _simulate(climber, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
-
-	# Read out before the world goes: the check below reports both positions, and
-	# the climber is freed with its world.
-	var climbed_at: Vector3 = climber.global_position
-	var climbed: bool = absf(climbed_at.y - (REST_Y + 0.2)) < EPS
-
-	# The height alone does not need the vertical pass: stair_step_up commits the
-	# rise and stair_step_down does the snap, so a _move_split that dropped its
-	# second move_and_slide entirely would still put the body in both right places.
-	# What the vertical pass alone does is consume gravity - without it velocity.y
-	# accumulates every frame and is near -GRAVITY by the end of a second's walk.
-	var settled: bool = absf(climber.velocity.y) < GRAVITY * DELTA * 2.0
-	var left_falling: float = climber.velocity.y
-	up_world.queue_free()
-	# process_frame, not physics_frame: queue_free is flushed at the end of the
-	# frame, and resuming on the next physics_frame can land before that flush -
-	# which would leave the first world's step standing in the second world, right
-	# where the next character walks.
-	await get_tree().process_frame
-
-	# Case 05's world, so the snap has the same 0.2 drop to find.
-	var down_world: Node3D = _new_world()
-	_add_box(down_world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
-	_add_box(down_world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.7, 0.0))
-	var walker: StairsCharacter = _add_character(down_world, StairsCharacter, 0.0)
-	walker.split_move = true
-
-	await _simulate(walker, Vector3.ZERO, SETTLE_FRAMES)
-	await _simulate(walker, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
-
-	var snapped: bool = (
-		absf(walker.global_position.y - (REST_Y - 0.2)) < EPS and walker.is_on_floor()
-	)
-	_check(
-		"46 split_move steps up and snaps down like the combined move",
-		climbed and snapped and settled,
-		(
-			"climbed=%s at %v, snapped=%s at %v, velocity.y=%.3f - the split pass broke"
-			% [climbed, climbed_at, snapped, walker.global_position, left_falling]
-			+ " a behaviour the combined one has"
-		),
-	)
-	down_world.queue_free()
-
-
-## move_and_slide applies the floor's platform velocity itself, before it looks at
-## the character's own, so a frame that calls it twice rides the platform twice.
-## Measured before the fix (test/diag_platform.gd): a rider holding no input at
-## all drifted 7.417 m across a platform that travelled 7.500 m - carried off the
-## front at very nearly platform speed.
-##
-## Found by review rather than by play, and reachable from the plainest possible
-## setup, which is why it is pinned rather than left to the diagnostic: any
-## character standing on any moving floor with split_move on.
-func _case_47_split_move_rides_a_platform_once() -> void:
-	const PLATFORM_SPEED: float = 5.0
-
-	var world: Node3D = _new_world()
-	var platform: AnimatableBody3D = AnimatableBody3D.new()
-	var platform_shape: CollisionShape3D = CollisionShape3D.new()
-	var platform_box: BoxShape3D = BoxShape3D.new()
-	platform_box.size = Vector3(40.0, 1.0, 8.0)
-	platform_shape.shape = platform_box
-	platform.add_child(platform_shape)
-	world.add_child(platform)
-	platform.global_position = Vector3(0.0, -0.5, 0.0)
-
-	var rider: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
-	rider.split_move = true
-
-	await _simulate(rider, Vector3.ZERO, SETTLE_FRAMES)
-
-	var offset_at_start: float = rider.global_position.x - platform.global_position.x
-	for _i: int in WALK_FRAMES:
-		await get_tree().physics_frame
-		# The platform moves first, the way a tween or an AnimationPlayer drives
-		# one, so the rider meets a floor that has already advanced.
-		platform.global_position.x += PLATFORM_SPEED * DELTA
-		# No input of its own: every metre the rider covers came from the floor.
-		rider.velocity.y -= GRAVITY * DELTA
-		rider.move_and_stair_step()
-
-	var drift: float = (rider.global_position.x - platform.global_position.x) - offset_at_start
-	var travelled: float = PLATFORM_SPEED * float(WALK_FRAMES) * DELTA
-	_check(
-		"47 split_move rides a moving platform once, not twice",
-		absf(drift) < EPS,
-		(
-			"rider drifted %+.3f m across a platform that travelled %.3f m - the two"
-			% [drift, travelled]
-			+ " passes are each applying the platform push"
 		),
 	)
 	world.queue_free()
@@ -2019,7 +1436,7 @@ func _case_48_climbs_stairs_that_ride_a_moving_platform() -> void:
 	world.add_child(platform)
 	platform.global_position = Vector3.ZERO
 
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 
 	var start_gap: float = c.global_position.y - platform.global_position.y
@@ -2082,7 +1499,7 @@ func _case_49_seats_the_horizontal_once_on_a_moving_platform() -> void:
 	world.add_child(platform)
 	platform.global_position = Vector3.ZERO
 
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.4)
+	var c: StairsBody = _add_character(world, 0.4)
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 
 	var start_gap: float = c.global_position.y - platform.global_position.y
@@ -2147,7 +1564,7 @@ func _case_52_a_slow_walk_reaches_the_face_at_a_high_tick_rate() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
 	_add_step(world, RISE)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 
 	for _i: int in SETTLE_FRAMES * 2:
 		await get_tree().physics_frame
@@ -2202,7 +1619,7 @@ func _case_53_a_slow_walk_does_not_lurch_when_it_seats() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
 	_add_step(world, RISE)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 
 	for _i: int in SETTLE_FRAMES * 2:
 		await get_tree().physics_frame
@@ -2252,7 +1669,7 @@ func _climb_a_moving_flight(platform_velocity: Vector3, rise: float, treads: int
 	world.add_child(platform)
 	platform.global_position = Vector3.ZERO
 
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 
 	var start_gap: float = c.global_position.y - platform.global_position.y
@@ -2354,7 +1771,7 @@ func _case_54_no_step_down_onto_a_face_too_steep_to_stand_on() -> void:
 
 	var world: Node3D = _new_world()
 	var floor_top: float = _add_drop_over_face(world, 2.0, LIP, STEEP)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	c.step_down_height = 0.5
 	var counts: Dictionary = _count_signals(c)
 
@@ -2389,7 +1806,7 @@ func _case_55_steps_down_onto_a_face_it_can_stand_on() -> void:
 
 	var world: Node3D = _new_world()
 	_add_drop_over_face(world, 2.0, LIP, WALKABLE)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	c.step_down_height = 0.5
 	var counts: Dictionary = _count_signals(c)
 
@@ -2441,7 +1858,7 @@ func _case_56_a_capsule_keeps_its_step_downs() -> void:
 
 	var world: Node3D = _new_world()
 	var bottom: float = _add_flight_down(world, RISE, GOING, TREADS)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0, false, capsule)
+	var c: StairsBody = _add_character(world, 0.0, capsule)
 	c.step_down_height = 0.5
 	var counts: Dictionary = _count_signals(c)
 
@@ -2488,7 +1905,7 @@ func _case_57_a_second_rounded_shape_keeps_its_step_downs() -> void:
 
 	var world: Node3D = _new_world()
 	var bottom: float = _add_flight_down(world, RISE, GOING, TREADS)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	# The rise is over the default reach, exactly as in case 56 - without this the
 	# flight is walked off rather than stepped down, and the case reads zero for a
 	# reason that has nothing to do with shapes.
@@ -2545,7 +1962,7 @@ func _case_58_a_disabled_rounded_shape_does_not_disarm_the_refusal() -> void:
 
 	var world: Node3D = _new_world()
 	var floor_top: float = _add_drop_over_face(world, 2.0, LIP, STEEP)
-	var c: StairsCharacter = _add_character(world, StairsCharacter, 0.0)
+	var c: StairsBody = _add_character(world, 0.0)
 	c.step_down_height = 0.5
 
 	var spare: CollisionShape3D = CollisionShape3D.new()

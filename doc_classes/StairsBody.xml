@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="StairsBody" inherits="AnimatableBody3D" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/godotengine/godot/master/doc/class.xsd">
+	<brief_description>
+		Kinematic character body that walks up and down stairs inside its own move.
+	</brief_description>
+	<description>
+		Kinematic character body with stair stepping built into its own move, rather than wrapped around [method CharacterBody3D.move_and_slide]. A frame pays for one set of sweeps instead of the slide's plus the step check's.
+		Replaces [method CharacterBody3D.move_and_slide] entirely, so none of [CharacterBody3D]'s API exists here. The getters keep its names where no native method is in the way. Set [member velocity], optionally [member desired_velocity], then call [method move_and_stair_step] from [method Node._physics_process].
+		Physics queries per frame, the budget this class is built around:
+		[codeblock lang=text]
+		walking on flat ground   2   (the move sweep, the contact test)
+		pressed into a wall      2   (the same two; the step attempt is cached)
+		intent off the motion   +1   (a sweep along intent, which only looks for a step)
+		climbing a step          5   (move sweep, up, forward, down, contact test)
+		leaving a floor         +1   (the floor probe, only where contact is lost)
+		on a moving platform    +1   (the carry, as its own sweep)
+		[/codeblock]
+		Assumes world up is [constant Vector3.UP].
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="get_floor_normal" qualifiers="const">
+			<return type="Vector3" />
+			<description>
+				Normal of the floor found by the last move. Only meaningful while [method is_on_floor] is [code]true[/code].
+			</description>
+		</method>
+		<method name="get_platform_velocity" qualifiers="const">
+			<return type="Vector3" />
+			<description>
+				Velocity of the floor the body stands on, added to [member velocity] when the body leaves it.
+			</description>
+		</method>
+		<method name="get_wall_normal" qualifiers="const">
+			<return type="Vector3" />
+			<description>
+				Normal of the wall hit by the last move. Only meaningful while [method is_on_wall] is [code]true[/code].
+			</description>
+		</method>
+		<method name="is_on_ceiling" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Whether the last move hit a ceiling.
+			</description>
+		</method>
+		<method name="is_on_floor" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Whether the body ended the last move on a floor.
+			</description>
+		</method>
+		<method name="is_on_wall" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Whether the last move hit a wall, or the body is being held still against one.
+			</description>
+		</method>
+		<method name="is_step_surface" qualifiers="static">
+			<return type="bool" />
+			<param index="0" name="body" type="RID" />
+			<param index="1" name="ignore_layers" type="int" default="0" />
+			<description>
+				Whether a step may be committed onto [param body]: anything the physics server is not simulating (static geometry, kinematic platforms, frozen rigid bodies) and not on [param ignore_layers]. A step is a teleport rather than a solve, so setting the body down on a simulating one leaves the solver to separate them by moving the only thing that can move, which raises the surface and offers the next frame a fresh step. Measured under Jolt: a loose 0.45 x 0.3 x 0.45 m crate lifted the body 1.085 m and left at 5.6 m/s, the same at 10 kg and 30 kg.
+			</description>
+		</method>
+		<method name="move_and_stair_step">
+			<return type="void" />
+			<description>
+				Moves the body by [member velocity] for one physics frame, stepping up and down stairs. Call it from [method Node._physics_process].
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="desired_velocity" type="Vector3" setter="set_desired_velocity" getter="get_desired_velocity" default="Vector3(0, 0, 0)">
+			Horizontal intent for this frame. Drives the step probe when velocity has been pinned near zero by the face it is pushing into. Cleared after each move.
+		</member>
+		<member name="floor_max_angle" type="float" setter="set_floor_max_angle" getter="get_floor_max_angle" default="0.785398">
+			Steepest surface that counts as floor, in radians.
+		</member>
+		<member name="force_stair_step" type="bool" setter="set_force_stair_step" getter="get_force_stair_step" default="false">
+			Allow a step this frame even when airborne. Cleared after each move.
+		</member>
+		<member name="max_slides" type="int" setter="set_max_slides" getter="get_max_slides" default="4">
+			Slide iterations for the main move.
+		</member>
+		<member name="min_step_forward" type="float" setter="set_min_step_forward" getter="get_min_step_forward" default="0.02">
+			Smallest distance a step probe looks ahead, whatever the tick rate.
+		</member>
+		<member name="safe_margin" type="float" setter="set_safe_margin" getter="get_safe_margin" default="0.001">
+			Collision margin used by every sweep.
+		</member>
+		<member name="smooth_node" type="Node3D" setter="set_smooth_node" getter="get_smooth_node">
+			The visual node whose local Y is eased after a step, so the camera or mesh does not pop when the body snaps up or down. Unassigned, smoothing is off.
+			Must be a child of the body, never the body: the collider has to sit at the stepped height the moment the step resolves. Point it at a pivot between the body and the camera: body, then [member smooth_node], then camera. This class owns the node's local Y; camera bob or recoil belongs on a child of it.
+		</member>
+		<member name="step_down_height" type="float" setter="set_step_down_height" getter="get_step_down_height" default="-1.0">
+			How far the floor probe reaches down to stay on the ground or step down. Negative follows [member step_height].
+		</member>
+		<member name="step_height" type="float" setter="set_step_height" getter="get_step_height" default="0.33">
+			Max height the body can step up onto.
+		</member>
+		<member name="step_ignore_layers" type="int" setter="set_step_ignore_layers" getter="get_step_ignore_layers" default="0">
+			Collision layers a step is never committed onto, though the body still collides with them: bodies too small or too self-driving to be a stair. Taken out of the body's mask while the step and floor-probe sweeps run, so those sweeps see the surface underneath instead.
+		</member>
+		<member name="step_slide_iterations" type="int" setter="set_step_slide_iterations" getter="get_step_slide_iterations" default="4">
+			Slide iterations for the forward leg of a step.
+		</member>
+		<member name="step_smoothing" type="float" setter="set_step_smoothing" getter="get_step_smoothing" default="20.0">
+			Exponential decay rate of the eased offset: higher is snappier. The time constant is [code]1 / step_smoothing[/code] seconds, so 20 settles in about 150 ms. Zero keeps the visual rigid without unassigning [member smooth_node]. Framerate independent.
+		</member>
+		<member name="velocity" type="Vector3" setter="set_velocity" getter="get_velocity" default="Vector3(0, 0, 0)">
+			Velocity in m/s. Written back after each move: clipped against what the body hit, and with any downward part zeroed while on the floor.
+		</member>
+	</members>
+	<signals>
+		<signal name="stepped">
+			<description>
+				Emitted on any stair step, in either direction, after the direction-specific one.
+			</description>
+		</signal>
+		<signal name="stepped_down">
+			<description>
+				Emitted when the floor probe has set the body down onto a lower surface.
+			</description>
+		</signal>
+		<signal name="stepped_up">
+			<description>
+				Emitted when the body has been raised onto a higher surface.
+			</description>
+		</signal>
+	</signals>
+</class>
