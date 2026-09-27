@@ -1,4 +1,4 @@
-# Stairs Character
+# Stairs Body
 
 `StairsBody` is a character body for Godot 4 that walks up and down steps. It
 sweeps the body itself with `body_test_motion` rather than raycasting, so a
