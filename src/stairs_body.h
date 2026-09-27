@@ -27,6 +27,7 @@
 #include <godot_cpp/classes/physics_shape_query_parameters3d.hpp>
 #include <godot_cpp/classes/physics_test_motion_parameters3d.hpp>
 #include <godot_cpp/classes/physics_test_motion_result3d.hpp>
+#include <godot_cpp/templates/local_vector.hpp>
 #include <godot_cpp/variant/rid.hpp>
 #include <godot_cpp/variant/transform3d.hpp>
 #include <godot_cpp/variant/vector3.hpp>
@@ -73,6 +74,13 @@ private:
 	// Cosine above which the step probe counts as along the motion rather than off it.
 	static constexpr double PARALLEL = 0.9999;
 
+	// One contact the last move met; see _record_contact for which ones count.
+	struct Contact {
+		uint64_t collider_id = 0;
+		Vector3 normal;
+		Vector3 position;
+	};
+
 	enum Kind {
 		KIND_FLOOR,
 		KIND_WALL,
@@ -102,6 +110,9 @@ private:
 	// a node; a body made straight on the server has id 0 and reads as freed.
 	uint64_t _floor_id = 0;
 	Vector3 _platform_velocity;
+	// Every contact of the last move, in the order met. Cleared, never shrunk, so a
+	// warmed-up body appends without allocating.
+	LocalVector<Contact> _contacts;
 
 	// The last step attempt that a wall refused, so pressing into the same wall from
 	// the same spot does not pay for the up and forward sweeps every frame. Only
@@ -146,6 +157,7 @@ private:
 	bool _probe_off_corner(const Vector3 &p_normal, double p_drop);
 	bool _flat_bottomed();
 	bool _test_motion(const Ref<PhysicsTestMotionParameters3D> &p_params);
+	void _record_contact(int p_index = 0);
 	Node3D *_smooth_node() const;
 
 protected:
@@ -164,6 +176,11 @@ public:
 	Vector3 get_floor_normal() const { return _floor_normal; }
 	Vector3 get_wall_normal() const { return _wall_normal; }
 	Vector3 get_platform_velocity() const { return _platform_velocity; }
+	int get_contact_count() const { return (int)_contacts.size(); }
+	Object *get_contact_collider(int p_index) const;
+	uint64_t get_contact_collider_id(int p_index) const;
+	Vector3 get_contact_normal(int p_index) const;
+	Vector3 get_contact_position(int p_index) const;
 
 	// Bound under these names so the shared suite can drive smoothing directly.
 	void _init_step_smoothing();

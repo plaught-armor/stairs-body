@@ -58,15 +58,30 @@ bool StairsBody::_test_motion(const Ref<PhysicsTestMotionParameters3D> &p_params
 	return physics()->body_test_motion(get_rid(), p_params, _result);
 }
 
+// Appends contact `index` of the last sweep to the contact list. The list holds
+// what the body touched on the path it took: slide sweeps, the sweeps of a step it
+// committed, the carry, the floor probe that set it down, and the resting contacts
+// of the post-move test, floor included. The sweeps of a step that was refused
+// are rolled back, since the body never went there.
+void StairsBody::_record_contact(int p_index) {
+	Contact contact;
+	contact.collider_id = _result->get_collider_id(p_index);
+	contact.normal = _result->get_collision_normal(p_index);
+	contact.position = _result->get_collision_point(p_index);
+	_contacts.push_back(contact);
+}
+
 // Moves the body by velocity for one physics frame, stepping up and down stairs.
 void StairsBody::move_and_stair_step() {
 	_params->set_margin(safe_margin);
 	const double delta = get_physics_process_delta_time();
 	const bool was_on_floor = _on_floor;
+	_contacts.clear();
 	if (was_on_floor) {
 		_refresh_platform_velocity();
 		_carry(_platform_velocity * delta);
 	}
+	const uint32_t carried_contacts = _contacts.size();
 
 	const Transform3D start = get_global_transform();
 	const Vector3 start_velocity = velocity;
@@ -78,6 +93,7 @@ void StairsBody::move_and_stair_step() {
 		// A sweep went through something. Redo the move checking every sweep.
 		set_global_transform(start);
 		velocity = start_velocity;
+		_contacts.resize(carried_contacts);
 		_clear_contacts();
 		_slide(motion, may_step, delta, true);
 		// Best effort: still embedded after this, the body is left where it is and
@@ -86,8 +102,8 @@ void StairsBody::move_and_stair_step() {
 	}
 	if (_step_rise > 0.0) {
 		_accumulate_step_smoothing(_step_rise);
-		emit_signal("stepped_up");
-		emit_signal("stepped");
+		emit_signal("stepped_up", _step_rise);
+		emit_signal("stepped", _step_rise);
 	}
 
 	if (was_on_floor && !_on_floor && velocity.y <= 0.0) {
@@ -171,7 +187,9 @@ void StairsBody::_carry(const Vector3 &p_motion) {
 	_params->set_from(get_global_transform());
 	_params->set_motion(p_motion);
 	_params->set_exclude_bodies(exclude);
-	_test_motion(_params);
+	if (_test_motion(_params)) {
+		_record_contact();
+	}
 	_params->set_exclude_bodies(TypedArray<RID>());
 	set_global_transform(get_global_transform().translated(_result->get_travel()));
 }
@@ -222,6 +240,7 @@ void StairsBody::_slide(Vector3 p_motion, bool p_may_step, double p_delta, bool 
 		}
 		from = from.translated(travel);
 		Vector3 normal = _result->get_collision_normal(0);
+		_record_contact();
 		const Kind kind = _classify(normal);
 		if (kind == KIND_WALL && p_may_step && _try_step(from, sweep - travel, normal)) {
 			from = _step_to;
@@ -256,12 +275,23 @@ bool StairsBody::_intent_step(const Transform3D &p_from, const Vector3 &p_probe,
 	if (angle <= floor_max_angle || angle >= Math::PI - floor_max_angle) {
 		return false;
 	}
-	if (Math::is_zero_approx(p_reach)) {
+	// Kept either way when the body is held against the face: that is a contact.
+	// Otherwise it is only the step's, and goes if the step does.
+	const uint32_t mark = _contacts.size();
+	_record_contact();
+	const bool held = Math::is_zero_approx(p_reach);
+	if (held) {
 		_on_wall = true;
 		_wall_normal = normal;
 	}
 	const Vector3 travel = _clip_length(_result->get_travel(), p_reach);
-	return _try_step(p_from.translated(travel), p_probe - travel, normal);
+	if (_try_step(p_from.translated(travel), p_probe - travel, normal)) {
+		return true;
+	}
+	if (!held) {
+		_contacts.resize(mark);
+	}
+	return false;
 }
 
 // Records the contact and says what it is.
@@ -316,6 +346,11 @@ bool StairsBody::_settle() {
 	if (!_test_motion(_contact_params)) {
 		return false;
 	}
+	// A redo rolls these back with the rest of the move's contacts.
+	const int count = _result->get_collision_count();
+	for (int i = 0; i < count; i++) {
+		_record_contact(i);
+	}
 	if (_result->get_travel().length() > safe_margin * EMBED_MARGINS) {
 		return true;
 	}
@@ -324,7 +359,6 @@ bool StairsBody::_settle() {
 	}
 	int best = -1;
 	double best_angle = floor_max_angle;
-	const int count = _result->get_collision_count();
 	for (int i = 0; i < count; i++) {
 		const double angle = _result->get_collision_normal(i).angle_to(WORLD_UP);
 		if (angle <= best_angle) {
@@ -443,13 +477,19 @@ bool StairsBody::is_step_surface(const RID &p_body, uint32_t p_ignore_layers) {
 // The step with step_ignore_layers out of the mask. body_test_motion takes no mask
 // of its own and reads the body's, so this is the only way to ask it early.
 bool StairsBody::_try_step(const Transform3D &p_at, const Vector3 &p_remainder, const Vector3 &p_wall_normal) {
+	const uint32_t mark = _contacts.size();
+	bool stepped_ok = false;
 	if (step_ignore_layers == 0) {
-		return _step_sweeps(p_at, p_remainder, p_wall_normal);
+		stepped_ok = _step_sweeps(p_at, p_remainder, p_wall_normal);
+	} else {
+		const uint32_t was_mask = get_collision_mask();
+		set_collision_mask(was_mask & ~step_ignore_layers);
+		stepped_ok = _step_sweeps(p_at, p_remainder, p_wall_normal);
+		set_collision_mask(was_mask);
 	}
-	const uint32_t was_mask = get_collision_mask();
-	set_collision_mask(was_mask & ~step_ignore_layers);
-	const bool stepped_ok = _step_sweeps(p_at, p_remainder, p_wall_normal);
-	set_collision_mask(was_mask);
+	if (!stepped_ok) {
+		_contacts.resize(mark);
+	}
 	return stepped_ok;
 }
 
@@ -464,7 +504,9 @@ bool StairsBody::_step_sweeps(const Transform3D &p_at, const Vector3 &p_remainde
 
 	_params->set_from(p_at);
 	_params->set_motion(WORLD_UP * step_height);
-	_test_motion(_params);
+	if (_test_motion(_params)) {
+		_record_contact();
+	}
 	const double rise = _result->get_travel().y;
 	if (rise < safe_margin) {
 		return false;
@@ -491,6 +533,7 @@ bool StairsBody::_step_sweeps(const Transform3D &p_at, const Vector3 &p_remainde
 	if (!_test_motion(_params)) {
 		return false;
 	}
+	_record_contact();
 	const Transform3D landed = ahead.translated(_result->get_travel());
 	const Vector3 normal = _result->get_collision_normal(0);
 	if (normal.angle_to(WORLD_UP) > floor_max_angle) {
@@ -521,6 +564,7 @@ Transform3D StairsBody::_step_forward(Transform3D p_from, const Vector3 &p_forwa
 		if (!blocked) {
 			break;
 		}
+		_record_contact();
 		motion = _result->get_remainder().slide(_result->get_collision_normal(0)) * HORIZONTAL_MASK;
 		if (motion.length() < safe_margin) {
 			break;
@@ -558,8 +602,8 @@ void StairsBody::_probe_floor() {
 	}
 	if (drop < 0.0) {
 		_accumulate_step_smoothing(drop);
-		emit_signal("stepped_down");
-		emit_signal("stepped");
+		emit_signal("stepped_down", -drop);
+		emit_signal("stepped", drop);
 	}
 }
 
@@ -607,6 +651,7 @@ double StairsBody::_probe_sweep() {
 		return 0.0;
 	}
 	set_global_transform(get_global_transform().translated(travel));
+	_record_contact();
 	_record_floor(normal);
 	return step_down ? travel.y : 0.0;
 }
@@ -661,6 +706,26 @@ bool StairsBody::_flat_bottomed() {
 		}
 	}
 	return shapes > 0;
+}
+
+Object *StairsBody::get_contact_collider(int p_index) const {
+	ERR_FAIL_INDEX_V(p_index, (int)_contacts.size(), nullptr);
+	return ObjectDB::get_instance(ObjectID(_contacts[p_index].collider_id));
+}
+
+uint64_t StairsBody::get_contact_collider_id(int p_index) const {
+	ERR_FAIL_INDEX_V(p_index, (int)_contacts.size(), 0);
+	return _contacts[p_index].collider_id;
+}
+
+Vector3 StairsBody::get_contact_normal(int p_index) const {
+	ERR_FAIL_INDEX_V(p_index, (int)_contacts.size(), Vector3());
+	return _contacts[p_index].normal;
+}
+
+Vector3 StairsBody::get_contact_position(int p_index) const {
+	ERR_FAIL_INDEX_V(p_index, (int)_contacts.size(), Vector3());
+	return _contacts[p_index].position;
 }
 
 Node3D *StairsBody::_smooth_node() const {
@@ -731,6 +796,11 @@ void StairsBody::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_floor_normal"), &StairsBody::get_floor_normal);
 	ClassDB::bind_method(D_METHOD("get_wall_normal"), &StairsBody::get_wall_normal);
 	ClassDB::bind_method(D_METHOD("get_platform_velocity"), &StairsBody::get_platform_velocity);
+	ClassDB::bind_method(D_METHOD("get_contact_count"), &StairsBody::get_contact_count);
+	ClassDB::bind_method(D_METHOD("get_contact_collider", "index"), &StairsBody::get_contact_collider);
+	ClassDB::bind_method(D_METHOD("get_contact_collider_id", "index"), &StairsBody::get_contact_collider_id);
+	ClassDB::bind_method(D_METHOD("get_contact_normal", "index"), &StairsBody::get_contact_normal);
+	ClassDB::bind_method(D_METHOD("get_contact_position", "index"), &StairsBody::get_contact_position);
 
 	ClassDB::bind_method(D_METHOD("_init_step_smoothing"), &StairsBody::_init_step_smoothing);
 	ClassDB::bind_method(D_METHOD("_accumulate_step_smoothing", "step_delta_y"), &StairsBody::_accumulate_step_smoothing);
@@ -768,7 +838,7 @@ void StairsBody::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_force_stair_step"), &StairsBody::get_force_stair_step);
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "force_stair_step", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NONE), "set_force_stair_step", "get_force_stair_step");
 
-	ADD_SIGNAL(MethodInfo("stepped"));
-	ADD_SIGNAL(MethodInfo("stepped_up"));
-	ADD_SIGNAL(MethodInfo("stepped_down"));
+	ADD_SIGNAL(MethodInfo("stepped", PropertyInfo(Variant::FLOAT, "delta")));
+	ADD_SIGNAL(MethodInfo("stepped_up", PropertyInfo(Variant::FLOAT, "rise")));
+	ADD_SIGNAL(MethodInfo("stepped_down", PropertyInfo(Variant::FLOAT, "drop")));
 }

@@ -110,8 +110,8 @@ func _physics_process(delta: float) -> void:
 `StairsBody` is **not** a `CharacterBody3D`. It keeps the familiar names where it
 can: `velocity`, `is_on_floor()`, `is_on_wall()`, `is_on_ceiling()`,
 `get_floor_normal()`, `get_wall_normal()` and `get_platform_velocity()`. There is
-no `move_and_slide()`, no slide-collision list, and no `up_direction`: world up is
-+Y. There is also no `floor_snap_length`, because the floor probe does that job,
+no `move_and_slide()` and no `up_direction`: world up is +Y. In place of the
+slide-collision list there is a [contact list](#contacts). There is also no `floor_snap_length`, because the floor probe does that job,
 reaching `step_down_height`.
 
 `desired_velocity` is where the controller wants to go this frame. It lets the body
@@ -217,12 +217,35 @@ parks it flush.
 
 | Signal | Emitted |
 |---|---|
-| `stepped_up` | The body was raised onto a higher surface. |
-| `stepped_down` | The floor probe set the body down onto a lower surface. |
-| `stepped` | Either of the above, right after the specific one. |
+| `stepped_up(rise)` | The body was raised onto a higher surface. |
+| `stepped_down(drop)` | The floor probe set the body down onto a lower surface. |
+| `stepped(delta)` | Either of the above, right after the specific one. |
+
+The heights are in metres and are how far the body actually moved, not how far it
+was allowed to reach. `rise` and `drop` are positive; `delta` is signed, positive
+up. A move emits at most one step, so a move that steps emits `stepped` and exactly
+one of the other two. Keeping contact with the floor while walking down a slope is
+not a step and emits nothing.
 
 All three fire inside `move_and_stair_step()`, after the move is final, so a
-handler must not call back into it.
+handler must not call back into it. With `smooth_node` unassigned, they are enough
+to drive your own step easing.
+
+## Contacts
+
+`get_contact_count()` and, per index, `get_contact_collider()`,
+`get_contact_collider_id()`, `get_contact_normal()` and `get_contact_position()`
+list what the last `move_and_stair_step()` touched. The getters are flat so
+reading them allocates nothing, and `get_contact_collider_id()` skips the object
+lookup for code that only compares ids.
+
+The list holds contacts on the path the body took: each slide sweep, the sweeps of
+a step it committed, a moving floor's carry, and the floor probe when it set the
+body down. It also holds the resting contacts of the check after the move, floor
+included, so a body leaning on something without moving still lists it. A step the
+body tried and refused lists none of its sweeps. The list is cleared at the start
+of every move. A collider can appear more than once, and the order carries no
+meaning.
 
 ## Physics engines
 
@@ -253,11 +276,11 @@ To run under Jolt, drop an `override.cfg` beside `project.godot`:
 
 Runs two headless suites and exits with the total number of failures:
 
-- `test/test_stairs.gd`, 43 cases. They began as `StairsCharacter`'s suite and
+- `test/test_stairs.gd`, 45 checks. They began as `StairsCharacter`'s suite and
   kept its case numbers, so the gaps are cases that tested that class's own API.
-- `test/test_stairs_body.gd`, 15 cases for machinery the first suite does not
-  reach: the tunnel guard, the refusal cache, the loose-step rule and the Jolt edge
-  handling.
+- `test/test_stairs_body.gd`, 19 checks for machinery the first suite does not
+  reach: the tunnel guard, the refusal cache, the loose-step rule, the Jolt edge
+  handling and the contact list.
 
 Each builds its worlds procedurally. Build the extension with `scons` first;
 `run.sh` stops if the library is missing. Point `GODOT` at a binary if the defaults

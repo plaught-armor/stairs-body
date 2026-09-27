@@ -44,6 +44,10 @@ func _run_all() -> void:
 	await _case_b11_a_frozen_crate_is_stepped_onto()
 	await _case_b12_a_walk_down_a_flight_steps_every_tread()
 	await _case_b13_a_step_lands_through_an_ignored_body()
+	await _case_b14_a_walk_into_a_wall_lists_the_wall_and_the_floor()
+	await _case_b15_held_against_a_wall_lists_the_wall()
+	await _case_b16_a_refused_step_lists_none_of_its_sweeps()
+	await _case_b17_a_pole_clipped_in_passing_is_listed()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -262,7 +266,7 @@ func _case_b05_a_step_refused_for_leftover_travel_is_not_remembered() -> void:
 	var frames: Array[int] = [0, -1] # gdlint: ignore[S6]
 	var first_contact: int = -1
 	c.stepped_up.connect(
-		func() -> void:
+		func(_rise: float) -> void:
 			if frames[1] < 0:
 				frames[1] = frames[0],
 	)
@@ -516,7 +520,7 @@ func _case_b12_a_walk_down_a_flight_steps_every_tread() -> void:
 	var counts: Array[PackedInt32Array] = [downs]
 	for lane: int in bodies.size():
 		bodies[lane].stepped_down.connect(
-			func() -> void:
+			func(_drop: float) -> void:
 				counts[0][lane] += 1,
 		)
 	for _i: int in 40:
@@ -586,7 +590,7 @@ func _case_b13_a_step_lands_through_an_ignored_body() -> void:
 	# Shared with the handler and not packed, for the reason given in b05.
 	var ups: Array[int] = [0] # gdlint: ignore[S6]
 	c.stepped_up.connect(
-		func() -> void:
+		func(_rise: float) -> void:
 			ups[0] += 1,
 	)
 	for _i: int in 15:
@@ -603,6 +607,153 @@ func _case_b13_a_step_lands_through_an_ignored_body() -> void:
 		"b13 a step lands through an ignored body",
 		ups[0] >= 1 and absf(c.global_position.y - (STEP_TOP + REST_Y)) < EPS,
 		"%d step ups, ended at %v" % [ups[0], c.global_position],
+	)
+	world.queue_free()
+
+
+## Index of the first contact on `body` whose normal is within ~25 degrees of
+## `normal`, or -1. Checks the collider, its id and the normal together.
+func _find_contact(c: StairsBody, body: Node, normal: Vector3) -> int:
+	for i: int in c.get_contact_count():
+		if (
+			c.get_contact_collider(i) == body
+			and c.get_contact_collider_id(i) == body.get_instance_id()
+			and c.get_contact_normal(i).dot(normal) > 0.9
+		):
+			return i
+	return -1
+
+
+## A sprint into a wall meets it on the slide sweep, and the floor comes from the
+## resting contacts of the post-move test. The position is on the wall's face.
+func _case_b14_a_walk_into_a_wall_lists_the_wall_and_the_floor() -> void:
+	var world: Node3D = _new_world()
+	var ground: StaticBody3D = _add_box(world, Vector3(20.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	var wall: StaticBody3D = _add_box(world, Vector3(1.0, 4.0, 8.0), Vector3(3.5, 2.0, 0.0))
+	var c: StairsBody = _add_body(world, Vector3(0.0, REST_Y, 0.0))
+	var wall_frames: int = 0
+	var floor_frames: int = 0
+	var face_x: float = INF
+	for _i: int in 15:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * DELTA
+		c.move_and_stair_step()
+	for _i: int in 45:
+		await get_tree().physics_frame
+		c.velocity = Vector3(8.0, c.velocity.y - GRAVITY * DELTA, 0.0)
+		c.desired_velocity = Vector3(8.0, 0.0, 0.0)
+		c.move_and_stair_step()
+		var at_wall: int = _find_contact(c, wall, Vector3.LEFT)
+		if at_wall >= 0:
+			wall_frames += 1
+			face_x = c.get_contact_position(at_wall).x
+		if _find_contact(c, ground, Vector3.UP) >= 0:
+			floor_frames += 1
+
+	_check(
+		"b14 a walk into a wall lists the wall and the floor",
+		wall_frames > 0 and floor_frames == 45 and absf(face_x - 3.0) < EPS,
+		"wall on %d frames, floor on %d of 45, wall contact x=%.4f expected ~3.0"
+		% [wall_frames, floor_frames, face_x],
+	)
+	world.queue_free()
+
+
+## Held against a wall with no motion - Jolt parks the body 4.2 mm off the face,
+## out of reach of the resting contacts - the intent probe is what touches it.
+func _case_b15_held_against_a_wall_lists_the_wall() -> void:
+	var world: Node3D = _slow_walk_world(false)
+	var wall: StaticBody3D = _add_box(
+		world,
+		Vector3(1.0, 4.0, 8.0),
+		Vector3(BODY_RADIUS + 0.5, 2.0, 0.0),
+	)
+	var c: StairsBody = _add_body(world, Vector3(0.0, REST_Y, 0.0))
+	var held_frames: int = 0
+	for _i: int in 15:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * DELTA
+		c.move_and_stair_step()
+	for _i: int in 30:
+		await get_tree().physics_frame
+		c.velocity = Vector3(0.0, c.velocity.y - GRAVITY * DELTA, 0.0)
+		c.desired_velocity = Vector3(3.0, 0.0, 0.0)
+		c.move_and_stair_step()
+		if _find_contact(c, wall, Vector3.LEFT) >= 0:
+			held_frames += 1
+
+	_check(
+		"b15 held against a wall lists the wall",
+		held_frames == 30,
+		"wall listed on %d of 30 frames" % held_frames,
+	)
+	world.queue_free()
+
+
+## A step the body did not take leaves none of its sweeps in the list. A ceiling
+## 0.1 m over the body's head lets the up sweep rise less than the 0.2 m step, so
+## the forward leg is blocked and the step refused - and the up sweep's ceiling
+## hit, the one contact only a step sweep can make here, must not be listed.
+func _case_b16_a_refused_step_lists_none_of_its_sweeps() -> void:
+	var world: Node3D = _slow_walk_world(true)
+	var ceiling: StaticBody3D = _add_box(
+		world,
+		Vector3(20.0, 0.2, 8.0),
+		Vector3(0.0, BODY_HEIGHT + 0.2, 0.0),
+	)
+	var c: StairsBody = _add_body(world, Vector3(0.0, REST_Y, 0.0))
+	var face_frames: int = 0
+	var ceiling_frames: int = 0
+	for _i: int in 15:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * DELTA
+		c.move_and_stair_step()
+	for _i: int in 60:
+		await get_tree().physics_frame
+		c.velocity = Vector3(3.0, c.velocity.y - GRAVITY * DELTA, 0.0)
+		c.desired_velocity = Vector3(3.0, 0.0, 0.0)
+		c.move_and_stair_step()
+		for i: int in c.get_contact_count():
+			if c.get_contact_normal(i).dot(Vector3.LEFT) > 0.9:
+				face_frames += 1
+			if c.get_contact_collider(i) == ceiling:
+				ceiling_frames += 1
+
+	_check(
+		"b16 a refused step lists none of its sweeps",
+		face_frames > 0 and ceiling_frames == 0 and absf(c.global_position.y - REST_Y) < EPS,
+		"step face listed %d times, ceiling %d times, y=%.4f expected face>0, ceiling 0, y~%.2f"
+		% [face_frames, ceiling_frames, c.global_position.y, REST_Y],
+	)
+	world.queue_free()
+
+
+## A sprint that clips a thin pole slides off it within the same move and ends
+## clear of it, so only the slide sweep ever touches the pole: the resting
+## contacts after the move cannot list it. Measured on both engines: listed once.
+func _case_b17_a_pole_clipped_in_passing_is_listed() -> void:
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(20.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	var pole: StaticBody3D = _add_box(world, Vector3(0.1, 4.0, 0.1), Vector3(2.0, 2.0, 0.3))
+	var c: StairsBody = _add_body(world, Vector3(0.0, REST_Y, 0.0))
+	var listed: int = 0
+	for _i: int in 15:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * DELTA
+		c.move_and_stair_step()
+	for _i: int in 40:
+		await get_tree().physics_frame
+		c.velocity = Vector3(8.0, c.velocity.y - GRAVITY * DELTA, c.velocity.z)
+		c.desired_velocity = Vector3(8.0, 0.0, 0.0)
+		c.move_and_stair_step()
+		for i: int in c.get_contact_count():
+			if c.get_contact_collider(i) == pole:
+				listed += 1
+
+	_check(
+		"b17 a pole clipped in passing is listed",
+		listed > 0 and c.global_position.x > 4.0,
+		"pole listed %d times, pos=%v expected listed>0 and x>4" % [listed, c.global_position],
 	)
 	world.queue_free()
 

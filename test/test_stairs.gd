@@ -435,19 +435,33 @@ func _case_14_step_up_bounded_by_step_height() -> void:
 	world.queue_free()
 
 
-func _count_signals(c: StairsBody) -> Dictionary:
-	var counts: Dictionary = { "any": 0, "up": 0, "down": 0 }
+## Counts each signal and sums the heights it carried. `bad` counts emits whose
+## height broke the contract: a directional height that is not positive, or a
+## `stepped` delta that does not match the directional signal just before it.
+func _count_signals(c: StairsBody) -> SignalCounts:
+	var counts: SignalCounts = SignalCounts.new()
 	c.stepped.connect(
-		func() -> void:
-			counts["any"] += 1,
+		func(delta: float) -> void:
+			counts.any += 1
+			counts.any_sum += delta
+			if not is_equal_approx(delta, counts.last):
+				counts.bad += 1,
 	)
 	c.stepped_up.connect(
-		func() -> void:
-			counts["up"] += 1,
+		func(rise: float) -> void:
+			counts.up += 1
+			counts.up_sum += rise
+			counts.last = rise
+			if rise <= 0.0:
+				counts.bad += 1,
 	)
 	c.stepped_down.connect(
-		func() -> void:
-			counts["down"] += 1,
+		func(drop: float) -> void:
+			counts.down += 1
+			counts.down_sum += drop
+			counts.last = -drop
+			if drop <= 0.0:
+				counts.bad += 1,
 	)
 	return counts
 
@@ -457,7 +471,7 @@ func _case_16_step_up_signals() -> void:
 	_add_ground(world, 1.0)
 	_add_step(world, 0.2)
 	var c: StairsBody = _add_character(world, 0.0)
-	var counts: Dictionary = _count_signals(c)
+	var counts: SignalCounts = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
@@ -465,9 +479,16 @@ func _case_16_step_up_signals() -> void:
 	# `stepped` is the sum of the two directional signals, never its own event.
 	_check(
 		"16 stepping up emits stepped_up and stepped",
-		counts["up"] >= 1 and counts["any"] == counts["up"] + counts["down"],
+		counts.up >= 1 and counts.any == counts.up + counts.down,
 		"up=%d down=%d any=%d expected up>=1 and any==up+down"
-		% [counts["up"], counts["down"], counts["any"]],
+		% [counts.up, counts.down, counts.any],
+	)
+	# The heights are what the body rose, not the reach it was allowed.
+	_check(
+		"16b stepped_up carries the rise",
+		counts.bad == 0 and absf(counts.up_sum - 0.2) < EPS,
+		"up_sum=%.4f down_sum=%.4f any_sum=%.4f bad=%d expected up_sum~0.2"
+		% [counts.up_sum, counts.down_sum, counts.any_sum, counts.bad],
 	)
 	world.queue_free()
 
@@ -480,15 +501,15 @@ func _case_17_no_signal_when_blocked() -> void:
 	_add_ground(world, 1.0)
 	_add_step(world, 0.6)
 	var c: StairsBody = _add_character(world, 0.0)
-	var counts: Dictionary = _count_signals(c)
+	var counts: SignalCounts = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
 
 	_check(
 		"17 a blocked step emits nothing",
-		counts["any"] == 0 and counts["up"] == 0 and counts["down"] == 0,
-		"up=%d down=%d any=%d expected 0 for all" % [counts["up"], counts["down"], counts["any"]],
+		counts.any == 0 and counts.up == 0 and counts.down == 0,
+		"up=%d down=%d any=%d expected 0 for all" % [counts.up, counts.down, counts.any],
 	)
 	world.queue_free()
 
@@ -498,16 +519,22 @@ func _case_18_step_down_signals() -> void:
 	_add_box(world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
 	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.7, 0.0))
 	var c: StairsBody = _add_character(world, 0.0)
-	var counts: Dictionary = _count_signals(c)
+	var counts: SignalCounts = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
 
 	_check(
 		"18 snapping down emits stepped_down and stepped",
-		counts["down"] >= 1 and counts["any"] == counts["up"] + counts["down"],
+		counts.down >= 1 and counts.any == counts.up + counts.down,
 		"up=%d down=%d any=%d expected down>=1 and any==up+down"
-		% [counts["up"], counts["down"], counts["any"]],
+		% [counts.up, counts.down, counts.any],
+	)
+	_check(
+		"18b stepped_down carries the drop",
+		counts.bad == 0 and absf(counts.down_sum - 0.2) < EPS,
+		"up_sum=%.4f down_sum=%.4f any_sum=%.4f bad=%d expected down_sum~0.2"
+		% [counts.up_sum, counts.down_sum, counts.any_sum, counts.bad],
 	)
 	world.queue_free()
 
@@ -551,7 +578,7 @@ func _case_19_walkable_ramp() -> void:
 	# lower edge meets the ground rather than presenting an end face to walk into.
 	_add_box(world, Vector3(12.0, 0.5, 8.0), Vector3(6.2, 2.78, 0.0), 30.0)
 	var c: StairsBody = _add_character(world, 0.0)
-	var counts: Dictionary = _count_signals(c)
+	var counts: SignalCounts = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 
@@ -559,10 +586,10 @@ func _case_19_walkable_ramp() -> void:
 	# lands on frame 11 of this walk under Jolt, and both engines report the face
 	# from frame 12.
 	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), _RAMP_APPROACH_FRAMES)
-	var on_the_approach: int = counts["up"]
+	var on_the_approach: int = counts.up
 
 	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), _RAMP_CLIMB_FRAMES)
-	var on_the_climb: int = counts["up"] - on_the_approach
+	var on_the_climb: int = counts.up - on_the_approach
 
 	_check(
 		"19 a walkable ramp is climbed without stair-stepping up it",
@@ -591,7 +618,7 @@ func _case_20_step_at_the_top_of_a_ramp() -> void:
 	_add_box(world, Vector3(5.3, 2.0, 8.0), Vector3(5.35, 0.0, 0.0))
 	_add_box(world, Vector3(3.0, 2.0, 8.0), Vector3(6.5, 0.2, 0.0))
 	var c: StairsBody = _add_character(world, 0.0)
-	var counts: Dictionary = _count_signals(c)
+	var counts: SignalCounts = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), 150)
@@ -599,10 +626,10 @@ func _case_20_step_at_the_top_of_a_ramp() -> void:
 	var on_step: bool = absf(c.global_position.y - (REST_Y + 1.2)) < EPS
 	_check(
 		"20 a step at the top of a ramp is still taken",
-		on_step and counts["up"] >= 1,
+		on_step and counts.up >= 1,
 		(
 			"pos=%v up=%d expected y~%.2f and at least one stepped_up"
-			% [c.global_position, counts["up"], REST_Y + 1.2]
+			% [c.global_position, counts.up, REST_Y + 1.2]
 		),
 	)
 	world.queue_free()
@@ -619,15 +646,15 @@ func _case_21_ceiling_flush_on_the_head() -> void:
 	# Head is at y = 1.8, so this sits directly on it.
 	_add_box(world, Vector3(6.0, 1.0, 8.0), Vector3(2.0, 2.3, 0.0))
 	var c: StairsBody = _add_character(world, 0.0)
-	var counts: Dictionary = _count_signals(c)
+	var counts: SignalCounts = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	var peak: float = await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
 
 	_check(
 		"21 a ceiling flush on the head blocks the step",
-		peak < REST_Y + EPS and counts["up"] == 0,
-		"peak=%.3f up=%d expected no rise and no stepped_up" % [peak, counts["up"]],
+		peak < REST_Y + EPS and counts.up == 0,
+		"peak=%.3f up=%d expected no rise and no stepped_up" % [peak, counts.up],
 	)
 	world.queue_free()
 
@@ -783,7 +810,7 @@ func _case_28_a_step_costs_no_stalled_frame() -> void:
 	_add_ground(world, 1.0)
 	_add_step(world, 0.2)
 	var c: StairsBody = _add_character(world, 0.0)
-	var counts: Dictionary = _count_signals(c)
+	var counts: SignalCounts = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 
@@ -796,14 +823,14 @@ func _case_28_a_step_costs_no_stalled_frame() -> void:
 	for i: int in WALK_FRAMES:
 		await get_tree().physics_frame
 		var before_x: float = c.global_position.x
-		var stepped_before: int = counts["up"]
+		var stepped_before: int = counts.up
 		c.velocity.x = WALK_SPEED
 		c.velocity.y -= GRAVITY * DELTA
 		c.desired_velocity = Vector3(WALK_SPEED, 0.0, 0.0)
 		c.move_and_stair_step()
 
 		# Only frames before the character is up on the step can stall against it.
-		if counts["up"] > 0 and stepped_before > 0:
+		if counts.up > 0 and stepped_before > 0:
 			continue
 		if c.global_position.x - before_x < expected_advance * 0.5:
 			stalls += 1
@@ -812,10 +839,10 @@ func _case_28_a_step_costs_no_stalled_frame() -> void:
 
 	_check(
 		"28 climbing a step costs no stalled frame",
-		stalls == 0 and counts["up"] >= 1,
+		stalls == 0 and counts.up >= 1,
 		(
 			"%d stalled frames (first at %d), stepped_up fired %d times"
-			% [stalls, worst_frame, counts["up"]]
+			% [stalls, worst_frame, counts.up]
 		),
 	)
 	world.queue_free()
@@ -869,7 +896,7 @@ func _case_29_a_clamped_rise_never_sinks_the_character() -> void:
 	c \
 			.stepped_up \
 			.connect(
-		func() -> void:
+		func(_rise: float) -> void:
 			lowest[0] = minf(lowest[0], c.global_position.y)
 			ups[0] += 1,
 	)
@@ -897,18 +924,18 @@ func _case_29_a_clamped_rise_never_sinks_the_character() -> void:
 	_add_ground(control_world, 1.0)
 	_add_step(control_world, 0.2)
 	var control: StairsBody = _add_character(control_world, 0.0)
-	var control_counts: Dictionary = _count_signals(control)
+	var control_counts: SignalCounts = _count_signals(control)
 	await _simulate(control, Vector3.ZERO, SETTLE_FRAMES)
 	await _simulate(control, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
 
 	_check(
 		"29 a clamped rise never sinks the character",
-		not sank and control_counts["up"] >= 1,
+		not sank and control_counts.up >= 1,
 		(
 			"sink: y=%.4f is %.3f below the start of %.4f after %d step-ups; "
 			% [lowest[0], start_y - lowest[0], start_y, ups[0]]
 			+ "control took %d step-ups (expected >=1, else the harness sees nothing)"
-			% control_counts["up"]
+			% control_counts.up
 		),
 	)
 	control_world.queue_free()
@@ -994,7 +1021,7 @@ func _case_31_step_up_eases_the_visual_down_then_home() -> void:
 	var offset_at_step: PackedFloat64Array = [0.0]
 	var fired: PackedInt32Array = [0]
 	c.stepped_up.connect(
-		func() -> void:
+		func(_rise: float) -> void:
 			if fired[0] == 0:
 				offset_at_step[0] = _smooth_offset(c)
 			fired[0] += 1,
@@ -1034,7 +1061,7 @@ func _case_32_step_down_eases_the_visual_up() -> void:
 	var offset_at_step: PackedFloat64Array = [0.0]
 	var fired: PackedInt32Array = [0]
 	c.stepped_down.connect(
-		func() -> void:
+		func(_drop: float) -> void:
 			if fired[0] == 0:
 				offset_at_step[0] = _smooth_offset(c)
 			fired[0] += 1,
@@ -1773,7 +1800,7 @@ func _case_54_no_step_down_onto_a_face_too_steep_to_stand_on() -> void:
 	var floor_top: float = _add_drop_over_face(world, 2.0, LIP, STEEP)
 	var c: StairsBody = _add_character(world, 0.0)
 	c.step_down_height = 0.5
-	var counts: Dictionary = _count_signals(c)
+	var counts: SignalCounts = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
@@ -1786,10 +1813,10 @@ func _case_54_no_step_down_onto_a_face_too_steep_to_stand_on() -> void:
 	var reached_the_floor: bool = absf(c.global_position.y - (floor_top + REST_Y)) < EPS
 	_check(
 		"54 no step down onto a face too steep to stand on",
-		counts["down"] == 0 and reached_the_floor and c.is_on_floor(),
+		counts.down == 0 and reached_the_floor and c.is_on_floor(),
 		(
 			"down=%d pos=%v expected down=0 and y~%.2f - a %.0f degree face is not"
-			% [counts["down"], c.global_position, floor_top + REST_Y, STEEP]
+			% [counts.down, c.global_position, floor_top + REST_Y, STEEP]
 			+ " something to be placed on, and the body must fall past it"
 		),
 	)
@@ -1808,17 +1835,17 @@ func _case_55_steps_down_onto_a_face_it_can_stand_on() -> void:
 	_add_drop_over_face(world, 2.0, LIP, WALKABLE)
 	var c: StairsBody = _add_character(world, 0.0)
 	c.step_down_height = 0.5
-	var counts: Dictionary = _count_signals(c)
+	var counts: SignalCounts = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
 
 	_check(
 		"55 steps down onto a face it can stand on",
-		counts["down"] >= 1,
+		counts.down >= 1,
 		(
 			"down=%d expected >=1 - a %.0f degree face is inside floor_max_angle, so"
-			% [counts["down"], WALKABLE]
+			% [counts.down, WALKABLE]
 			+ " the lip above it is a step down and not a fall"
 		),
 	)
@@ -1860,7 +1887,7 @@ func _case_56_a_capsule_keeps_its_step_downs() -> void:
 	var bottom: float = _add_flight_down(world, RISE, GOING, TREADS)
 	var c: StairsBody = _add_character(world, 0.0, capsule)
 	c.step_down_height = 0.5
-	var counts: Dictionary = _count_signals(c)
+	var counts: SignalCounts = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	await _simulate(c, Vector3(SPEED, 0.0, 0.0), FRAMES)
@@ -1871,10 +1898,10 @@ func _case_56_a_capsule_keeps_its_step_downs() -> void:
 	var down_the_flight: bool = absf(c.global_position.y - (bottom + REST_Y)) < EPS
 	_check(
 		"56 a capsule keeps its step downs",
-		counts["down"] >= SNAPS_MIN and down_the_flight,
+		counts.down >= SNAPS_MIN and down_the_flight,
 		(
 			"down=%d pos=%v expected >=%d over %d treads and y~%.2f - the steep-landing"
-			% [counts["down"], c.global_position, SNAPS_MIN, TREADS, bottom + REST_Y]
+			% [counts.down, c.global_position, SNAPS_MIN, TREADS, bottom + REST_Y]
 			+ " check is reading a rounded bottom's corner contact and refusing"
 			+ " ordinary stairs"
 		),
@@ -1927,7 +1954,7 @@ func _case_57_a_second_rounded_shape_keeps_its_step_downs() -> void:
 	var rest: float = BODY_HEIGHT * 0.5 + BODY_RADIUS
 	c.global_position = Vector3(0.0, rest, 0.0)
 
-	var counts: Dictionary = _count_signals(c)
+	var counts: SignalCounts = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	await _simulate(c, Vector3(SPEED, 0.0, 0.0), FRAMES)
@@ -1935,10 +1962,10 @@ func _case_57_a_second_rounded_shape_keeps_its_step_downs() -> void:
 	var down_the_flight: bool = absf(c.global_position.y - (bottom + rest)) < EPS
 	_check(
 		"57 a second rounded shape keeps its step downs",
-		counts["down"] >= SNAPS_MIN and down_the_flight,
+		counts.down >= SNAPS_MIN and down_the_flight,
 		(
 			"down=%d pos=%v expected >=%d over %d treads and y~%.2f - the flat-bottom"
-			% [counts["down"], c.global_position, SNAPS_MIN, TREADS, bottom + rest]
+			% [counts.down, c.global_position, SNAPS_MIN, TREADS, bottom + rest]
 			+ " test is reading the collider export rather than the body's shapes"
 		),
 	)
@@ -1974,7 +2001,7 @@ func _case_58_a_disabled_rounded_shape_does_not_disarm_the_refusal() -> void:
 	spare.disabled = true
 	c.add_child(spare)
 
-	var counts: Dictionary = _count_signals(c)
+	var counts: SignalCounts = _count_signals(c)
 
 	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
 	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
@@ -1983,11 +2010,24 @@ func _case_58_a_disabled_rounded_shape_does_not_disarm_the_refusal() -> void:
 	var reached_the_floor: bool = absf(c.global_position.y - (floor_top + REST_Y)) < EPS
 	_check(
 		"58 a disabled rounded shape does not disarm the refusal",
-		counts["down"] == 0 and reached_the_floor and c.is_on_floor(),
+		counts.down == 0 and reached_the_floor and c.is_on_floor(),
 		(
 			"down=%d pos=%v expected down=0 and y~%.2f - a shape that is not in the"
-			% [counts["down"], c.global_position, floor_top + REST_Y]
+			% [counts.down, c.global_position, floor_top + REST_Y]
 			+ " simulation is deciding what the simulation may commit to"
 		),
 	)
 	world.queue_free()
+
+
+## What _count_signals collects: each signal's count and the heights it carried.
+class SignalCounts:
+	var any: int = 0
+	var up: int = 0
+	var down: int = 0
+	var any_sum: float = 0.0
+	var up_sum: float = 0.0
+	var down_sum: float = 0.0
+	## The signed height of the last directional signal, which `stepped` must repeat.
+	var last: float = 0.0
+	var bad: int = 0

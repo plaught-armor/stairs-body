@@ -20,6 +20,40 @@
 	<tutorials>
 	</tutorials>
 	<methods>
+		<method name="get_contact_collider" qualifiers="const">
+			<return type="Object" />
+			<param index="0" name="index" type="int" />
+			<description>
+				The object the contact at [param index] belongs to, or [code]null[/code] if it has been freed since the move. See [method get_contact_count] for which contacts are listed.
+			</description>
+		</method>
+		<method name="get_contact_collider_id" qualifiers="const">
+			<return type="int" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Instance id of the object the contact at [param index] belongs to. Cheaper than [method get_contact_collider] when only comparing ids.
+			</description>
+		</method>
+		<method name="get_contact_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Number of contacts the last [method move_and_stair_step] made. Listed: each slide sweep's contact, the sweeps of a step the body committed, a moving floor's carry, the floor probe when it set the body down, and the resting contacts after the move, floor included. Not listed: the sweeps of a step that was refused. Cleared at the start of every move. A collider may appear more than once; the order carries no meaning.
+			</description>
+		</method>
+		<method name="get_contact_normal" qualifiers="const">
+			<return type="Vector3" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Normal of the contact at [param index], pointing from the collider toward the body.
+			</description>
+		</method>
+		<method name="get_contact_position" qualifiers="const">
+			<return type="Vector3" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Global position of the contact at [param index].
+			</description>
+		</method>
 		<method name="get_floor_normal" qualifiers="const">
 			<return type="Vector3" />
 			<description>
@@ -115,18 +149,21 @@
 	</members>
 	<signals>
 		<signal name="stepped">
+			<param index="0" name="delta" type="float" />
 			<description>
-				Emitted on any stair step, in either direction, after the direction-specific one.
+				Emitted on any stair step, in either direction, after the direction-specific one. [param delta] is the height the body moved, in metres: positive up, negative down.
 			</description>
 		</signal>
 		<signal name="stepped_down">
+			<param index="0" name="drop" type="float" />
 			<description>
-				Emitted when the floor probe has set the body down onto a lower surface.
+				Emitted when the floor probe has set the body down onto a lower surface. [param drop] is how far it went down, in metres, and is positive.
 			</description>
 		</signal>
 		<signal name="stepped_up">
+			<param index="0" name="rise" type="float" />
 			<description>
-				Emitted when the body has been raised onto a higher surface.
+				Emitted when the body has been raised onto a higher surface. [param rise] is how far it went up, in metres, and is positive.
 			</description>
 		</signal>
 	</signals>
