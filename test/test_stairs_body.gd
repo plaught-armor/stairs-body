@@ -47,6 +47,7 @@ func _run_all() -> void:
 	await _case_b15_held_against_a_wall_lists_the_wall()
 	await _case_b16_a_refused_step_lists_none_of_its_sweeps()
 	await _case_b17_a_pole_clipped_in_passing_is_listed()
+	await _case_b18_a_floor_on_an_ignored_layer_is_never_ridden()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -735,6 +736,58 @@ func _case_b17_a_pole_clipped_in_passing_is_listed() -> void:
 		"pole listed %d times, pos=%v expected listed>0 and x>4" % [listed, c.global_position],
 	)
 	world.queue_free()
+
+
+## Stands a rider on a StairsBody that is teleported 0.2 m back and forth every
+## tick. Returns the most platform speed the rider read, and the lowest it sat once
+## the teleports began. The floor body is on its own layer, which the rider
+## collides with and, when `ignore`, ignores for steps.
+func _ride_a_teleported_body(ignore: bool) -> PackedFloat64Array:
+	const IGNORED_LAYER: int = 2
+	const SETTLE: int = 20
+	var world: Node3D = _slow_walk_world(false)
+	var floor_body: StairsBody = StairsBody.new()
+	floor_body.collision_layer = IGNORED_LAYER
+	_add_body(world, Vector3(0.0, REST_Y, 0.0), floor_body)
+	var rider: StairsBody = StairsBody.new()
+	rider.collision_mask = 1 | IGNORED_LAYER
+	if ignore:
+		rider.step_ignore_layers = IGNORED_LAYER
+	_add_body(world, Vector3(0.0, BODY_HEIGHT + REST_Y + 0.01, 0.0), rider)
+	var peak: float = 0.0
+	var lowest: float = INF
+	for i: int in 60:
+		await get_tree().physics_frame
+		rider.velocity.y -= GRAVITY * DELTA
+		rider.move_and_stair_step()
+		peak = maxf(peak, rider.get_platform_velocity().length())
+		if i >= SETTLE:
+			lowest = minf(lowest, rider.global_position.y)
+			floor_body.global_position.x += 0.2 if i % 2 == 0 else -0.2
+	world.queue_free()
+	return [peak, lowest]
+
+
+## A teleported kinematic body reports the jump as velocity, so standing on one
+## would carry the rider at that speed - measured 12 m/s here, on both engines,
+## and 26-67 m/s in a game's body crowds. A floor on step_ignore_layers holds the
+## rider up without carrying it: both halves are checked, since a rider that fell
+## through to the ground would read no platform speed either. The control proves
+## the teleport is seen at all.
+func _case_b18_a_floor_on_an_ignored_layer_is_never_ridden() -> void:
+	var carried: PackedFloat64Array = await _ride_a_teleported_body(false)
+	var ignored: PackedFloat64Array = await _ride_a_teleported_body(true)
+	var held_up: bool = ignored[1] > BODY_HEIGHT + REST_Y - EPS
+
+	_check(
+		"b18 a floor on an ignored layer is never ridden",
+		carried[0] > 5.0 and ignored[0] == 0.0 and held_up,
+		(
+			"platform speed %.2f without the ignore (expected > 5), %.2f with it (expected 0);"
+			+ " lowest y with it %.4f (expected ~%.2f, on the floor body)"
+		)
+		% [carried[0], ignored[0], ignored[1], BODY_HEIGHT + REST_Y],
+	)
 
 
 ## Counts engine errors, so a case can say none were raised. Warnings reach the

@@ -290,10 +290,23 @@ StairsBody::Kind StairsBody::_classify(const Vector3 &p_normal) {
 }
 
 // Floor state from contact `index` of the last sweep.
+//
+// A floor on step_ignore_layers holds the body up but never carries it. Such
+// bodies are the self-driving kind, and a kinematic one that is teleported (a
+// StairsBody set into place, say) reports the jump as velocity: measured, one
+// moved 0.2 m in a tick read as a 12 m/s platform to the body standing on it, on
+// both engines, which the carry then applied and leaving the floor kept.
 void StairsBody::_record_floor(const Vector3 &p_normal, int p_index) {
 	_on_floor = true;
 	_floor_normal = p_normal;
-	_floor_rid = _result->get_collider_rid(p_index);
+	const RID rid = _result->get_collider_rid(p_index);
+	if (step_ignore_layers != 0 && (physics()->body_get_collision_layer(rid) & step_ignore_layers) != 0) {
+		_floor_rid = RID();
+		_floor_id = 0;
+		_platform_velocity = Vector3();
+		return;
+	}
+	_floor_rid = rid;
 	_floor_id = _result->get_collider_id(p_index);
 	_platform_velocity = _result->get_collider_velocity(p_index);
 }

@@ -131,7 +131,7 @@
 			Max height the body can step up onto.
 		</member>
 		<member name="step_ignore_layers" type="int" setter="set_step_ignore_layers" getter="get_step_ignore_layers" default="0">
-			Collision layers a step is never committed onto, though the body still collides with them: bodies too small or too self-driving to be a stair. Taken out of the body's mask while the step and floor-probe sweeps run, so those sweeps see the surface underneath instead.
+			Collision layers a step is never committed onto, though the body still collides with them: bodies too small or too self-driving to be a stair. Taken out of the body's mask while the step and floor-probe sweeps run, so those sweeps see the surface underneath instead. A floor on these layers holds the body up but never carries it as a platform: [method get_platform_velocity] stays zero on it.
 		</member>
 		<member name="step_slide_iterations" type="int" setter="set_step_slide_iterations" getter="get_step_slide_iterations" default="4">
 			Slide iterations for the forward leg of a step.

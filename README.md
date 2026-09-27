@@ -135,7 +135,7 @@ climbing with one.
 | `floor_max_angle` | 45° | Steepest surface that counts as floor. |
 | `max_slides` | `4` | Slides for the main move. |
 | `safe_margin` | `0.001` | Collision margin for every sweep. |
-| `step_ignore_layers` | none | Layers a step is never placed onto, though the body still collides with them: bodies too small or too self-driving to be a stair. |
+| `step_ignore_layers` | none | Layers a step is never placed onto, though the body still collides with them: bodies too small or too self-driving to be a stair. A floor on them holds the body up but never carries it as a platform. |
 | `velocity` | zero | Velocity in m/s. After each move it is clipped against what the body hit, and its downward part is zeroed on the floor. |
 | `desired_velocity` | zero | Horizontal intent for this frame. Cleared after each move. |
 | `force_stair_step` | `false` | Allow a step this frame while airborne, such as a ledge catch. Cleared after each move. |
@@ -324,7 +324,7 @@ Runs two headless suites and exits with the total number of failures:
 
 - `test/test_stairs.gd`, 43 checks. They began as `StairsCharacter`'s suite and
   kept its case numbers, so the gaps are cases that tested that class's own API.
-- `test/test_stairs_body.gd`, 18 checks for machinery the first suite does not
+- `test/test_stairs_body.gd`, 19 checks for machinery the first suite does not
   reach: the tunnel guard, the refusal cache, the loose-step rule, the Jolt edge
   handling and the contact list.
 
