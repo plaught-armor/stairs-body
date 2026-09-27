@@ -124,10 +124,6 @@
 		<member name="safe_margin" type="float" setter="set_safe_margin" getter="get_safe_margin" default="0.001">
 			Collision margin used by every sweep.
 		</member>
-		<member name="smooth_node" type="Node3D" setter="set_smooth_node" getter="get_smooth_node">
-			The visual node whose local Y is eased after a step, so the camera or mesh does not pop when the body snaps up or down. Unassigned, smoothing is off.
-			Must be a child of the body, never the body: the collider has to sit at the stepped height the moment the step resolves. Point it at a pivot between the body and the camera: body, then [member smooth_node], then camera. This class owns the node's local Y; camera bob or recoil belongs on a child of it.
-		</member>
 		<member name="step_down_height" type="float" setter="set_step_down_height" getter="get_step_down_height" default="-1.0">
 			How far the floor probe reaches down to stay on the ground or step down. Negative follows [member step_height].
 		</member>
@@ -139,9 +135,6 @@
 		</member>
 		<member name="step_slide_iterations" type="int" setter="set_step_slide_iterations" getter="get_step_slide_iterations" default="4">
 			Slide iterations for the forward leg of a step.
-		</member>
-		<member name="step_smoothing" type="float" setter="set_step_smoothing" getter="get_step_smoothing" default="20.0">
-			Exponential decay rate of the eased offset: higher is snappier. The time constant is [code]1 / step_smoothing[/code] seconds, so 20 settles in about 150 ms. Zero keeps the visual rigid without unassigning [member smooth_node]. Framerate independent.
 		</member>
 		<member name="velocity" type="Vector3" setter="set_velocity" getter="get_velocity" default="Vector3(0, 0, 0)">
 			Velocity in m/s. Written back after each move: clipped against what the body hit, and with any downward part zeroed while on the floor.

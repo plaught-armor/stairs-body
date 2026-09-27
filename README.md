@@ -136,8 +136,6 @@ climbing with one.
 | `max_slides` | `4` | Slides for the main move. |
 | `safe_margin` | `0.001` | Collision margin for every sweep. |
 | `step_ignore_layers` | none | Layers a step is never placed onto, though the body still collides with them: bodies too small or too self-driving to be a stair. |
-| `smooth_node` | unset | Visual child eased after a step. See [Step smoothing](#step-smoothing). |
-| `step_smoothing` | `20` | Decay rate of that easing. |
 | `velocity` | zero | Velocity in m/s. After each move it is clipped against what the body hit, and its downward part is zeroed on the floor. |
 | `desired_velocity` | zero | Horizontal intent for this frame. Cleared after each move. |
 | `force_stair_step` | `false` | Allow a step this frame while airborne, such as a ledge catch. Cleared after each move. |
@@ -175,29 +173,77 @@ body 1.085 m and threw it at 5.6 m/s. The same rule is exposed as
 
 ## Step smoothing
 
-A step moves the body in one frame, which reads as a pop on the camera. The class
-can hide that by easing the visual into place while the body itself still snaps.
-The snap keeps the physics correct, so it is never smoothed: an eased body would
-sit inside the step mid-ease.
+A step moves the body in one physics frame, which reads as a pop on the camera.
+The class does not hide that itself: the step signals carry the height moved, and
+the easing is yours, so it can do what your game needs, such as holding while a
+foot is in the air or feeding foot IK.
 
-What eases is a **child**, your camera or mesh pivot. The class pushes it the
-opposite way for one frame and then decays it back, so the view holds still and
-then glides to meet the body. Rig it as `body -> smooth_node -> camera`:
+Ease a **child**, never the body. The body has to be at the stepped height the
+moment the step resolves, or the collider sits inside the step. Rig it as
+`body -> pivot -> camera`, and push the pivot the opposite way by each step's
+height, then decay the push back to zero:
 
 ```
 Player            (extends StairsBody)
-└── SmoothPivot   (Node3D, assigned to smooth_node)
-    └── Camera3D   (your camera; head bob, recoil, etc. live here)
+└── StepPivot     (Node3D, step_ease.gd)
+    └── Camera3D  (head bob, recoil, etc. live here)
 ```
 
-The class owns the pivot's local Y, so keep camera bob or recoil on a child of it.
-A write to the pivot's own Y is overwritten every frame.
+`test/step_ease.gd` is a complete version, and the test suite runs it:
 
-`step_smoothing` is an exponential decay rate. `1 / step_smoothing` is the time
-constant, so `20` settles in about 150 ms, `8-10` floats, and past `30` is almost
-the raw snap. It is framerate independent. Set it to `0`, or leave `smooth_node`
-unassigned, and the view snaps with the body. Smoothing does not run in the
-editor.
+```gdscript
+extends Node3D
+
+## Step easing for a StairsBody, the recipe the README quotes. The suite runs this
+## file, so the recipe stays true.
+##
+## Attach to a Node3D that is a direct child of the StairsBody and parents the
+## camera or mesh: body, then this pivot, then camera. A step moves the body in
+## one physics frame; this pushes the pivot the opposite way by the same height,
+## so the view holds still, and then decays the push back to zero.
+##
+## This script owns the pivot's local Y. Keep camera bob or recoil on a child.
+
+## Decay rate of the push, per second. The time constant is 1 / rate, so 20
+## settles in about 150 ms, 8 to 10 feels floaty, and past 30 is almost the raw snap.
+@export var rate: float = 20.0
+
+## The current push, in metres. Read it, never write it.
+var offset: float = 0.0
+var _rest_y: float = 0.0
+var _body: StairsBody
+
+
+func _ready() -> void:
+	_body = get_parent() as StairsBody
+	if _body == null:
+		push_error("step_ease.gd must be a direct child of a StairsBody.")
+		set_process(false)
+		return
+	_rest_y = position.y
+	_body.stepped.connect(_on_stepped)
+
+
+## Render rate, which is what the eye sees. exp(-rate * dt) closes the same share
+## of the distance per second at any frame rate.
+func _process(delta: float) -> void:
+	offset *= exp(-rate * delta)
+	position.y = _rest_y + offset
+
+
+## Clamped to one step's reach, so a burst of steps cannot stack into a lurch.
+func _on_stepped(delta: float) -> void:
+	var down_reach: float = _body.step_down_height
+	if down_reach < 0.0:
+		down_reach = _body.step_height
+	var reach: float = maxf(_body.step_height, down_reach)
+	offset = clampf(offset - delta, -reach, reach)
+```
+
+`rate` is an exponential decay rate: `1 / rate` is the time constant, so `20`
+settles in about 150 ms. The decay runs at render rate because easing is visual.
+The clamp stops a burst of steps from stacking into a lurch. There is no teleport
+guard, because the signals only ever report a step, never a teleport or a shove.
 
 ## Tick rate
 
@@ -228,8 +274,8 @@ one of the other two. Keeping contact with the floor while walking down a slope 
 not a step and emits nothing.
 
 All three fire inside `move_and_stair_step()`, after the move is final, so a
-handler must not call back into it. With `smooth_node` unassigned, they are enough
-to drive your own step easing.
+handler must not call back into it. Build your own [step smoothing](#step-smoothing)
+on them.
 
 ## Contacts
 
@@ -276,9 +322,9 @@ To run under Jolt, drop an `override.cfg` beside `project.godot`:
 
 Runs two headless suites and exits with the total number of failures:
 
-- `test/test_stairs.gd`, 45 checks. They began as `StairsCharacter`'s suite and
+- `test/test_stairs.gd`, 43 checks. They began as `StairsCharacter`'s suite and
   kept its case numbers, so the gaps are cases that tested that class's own API.
-- `test/test_stairs_body.gd`, 19 checks for machinery the first suite does not
+- `test/test_stairs_body.gd`, 18 checks for machinery the first suite does not
   reach: the tunnel guard, the refusal cache, the loose-step rule, the Jolt edge
   handling and the contact list.
 

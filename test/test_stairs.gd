@@ -41,6 +41,8 @@ const WALK_FRAMES: int = 60
 ## Position tolerance. Wider than the collider margin because the solver leaves
 ## the body resting a fraction above the surface.
 const EPS: float = 0.05
+## The README's step easing recipe, run here so it stays true.
+const STEP_EASE: GDScript = preload("res://test/step_ease.gd")
 
 var _passed: int = 0
 var _failed: int = 0
@@ -78,9 +80,7 @@ func _run_all() -> void:
 	await _case_30_snap_down_reach_is_exactly_step_height()
 	await _case_31_step_up_eases_the_visual_down_then_home()
 	await _case_32_step_down_eases_the_visual_up()
-	await _case_33_zero_smoothing_keeps_the_visual_rigid()
-	await _case_34_a_teleport_sized_jump_is_not_smoothed()
-	await _case_35_no_smooth_node_leaves_smoothing_off()
+	await _case_33_a_burst_of_steps_is_clamped_to_one_reach()
 	await _case_37_steps_up_from_a_standstill_against_the_face()
 	await _case_39_climbs_while_pressed_against_a_wall()
 	await _case_40_climbs_at_a_high_tick_rate()
@@ -981,175 +981,94 @@ func _case_30_snap_down_reach_is_exactly_step_height() -> void:
 	world.queue_free()
 
 
-## Attaches a smooth_node child at a non-zero rest Y - non-zero on purpose, so a
-## test can prove the decay homes to the authored rest rather than to zero.
-##
-## The editor assigns smooth_node before the node enters the tree, so
-## NOTIFICATION_READY captures the rest Y and turns processing on. This harness
-## assigns the export after _add_character has already added the body, so that
-## one-time setup is re-run explicitly here; it only records the rest Y and
-## enables processing.
-func _attach_smooth_node(c: StairsBody, rest_y: float, smoothing: float) -> Node3D:
-	var cam: Node3D = Node3D.new()
-	cam.name = "SmoothPivot"
-	cam.position = Vector3(0.0, rest_y, 0.0)
-	c.add_child(cam)
-	c.smooth_node = cam
-	c.step_smoothing = smoothing
-	c.call(&"_init_step_smoothing")
-	return cam
+## Adds step_ease.gd, the README's easing recipe, as a pivot child at a non-zero
+## rest Y - non-zero on purpose, so a case can prove the decay homes to the
+## authored rest rather than to zero. Processing is turned off so the push is read
+## before any decay; a case that wants the decay turns it back on.
+func _attach_step_ease(c: StairsBody, rest_y: float) -> STEP_EASE:
+	var pivot: STEP_EASE = STEP_EASE.new()
+	pivot.position = Vector3(0.0, rest_y, 0.0)
+	c.add_child(pivot)
+	pivot.set_process(false)
+	return pivot
 
 
-## Reads the private visual offset the decay chases back to rest.
-func _smooth_offset(c: StairsBody) -> float:
-	return c.get(&"_smooth_offset_y")
+## Walks `c` over a single step and returns the recipe's push sampled at the
+## first `stepped`. Connected after the recipe's own handler, so it runs after it,
+## before any decay: the full push.
+func _push_at_first_step(c: StairsBody, pivot: STEP_EASE) -> float:
+	var sampled: PackedFloat64Array = [0.0]
+	var fired: PackedInt32Array = [0]
+	c.stepped.connect(
+		func(_delta: float) -> void:
+			if fired[0] == 0:
+				sampled[0] = pivot.offset
+			fired[0] += 1,
+	)
+	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
+	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+	return sampled[0] if fired[0] >= 1 else 0.0
 
 
-## The step itself is real, so this exercises the accumulate call on the actual
-## apply site. The body steps up +0.2, so the visual has to be pushed the opposite
-## way - below rest - and then eased home. Decay is driven with an explicit dt
-## rather than by awaiting idle frames: the offset math is what is under test, and
-## a fixed dt makes it deterministic instead of hostage to the headless idle rate.
+## The recipe on a real step: the body rises 0.2, so the pivot is pushed the same
+## height down - below rest - and then eased home.
 func _case_31_step_up_eases_the_visual_down_then_home() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
 	_add_step(world, 0.2)
 	var c: StairsBody = _add_character(world, 0.0)
-	var cam: Node3D = _attach_smooth_node(c, 0.5, 20.0)
+	var pivot: STEP_EASE = _attach_step_ease(c, 0.5)
 
-	# Sampled at the emit, before any decay, so it is the full push.
-	var offset_at_step: PackedFloat64Array = [0.0]
-	var fired: PackedInt32Array = [0]
-	c.stepped_up.connect(
-		func(_rise: float) -> void:
-			if fired[0] == 0:
-				offset_at_step[0] = _smooth_offset(c)
-			fired[0] += 1,
-	)
-
-	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
-	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
-
-	var pushed_down: bool = fired[0] >= 1 and offset_at_step[0] < -0.1
-
-	# Drive the decay to completion with a fixed 60 Hz dt.
-	for _i: int in 200:
-		c.call(&"_tick_step_smoothing", DELTA)
-	var homed: bool = absf(_smooth_offset(c)) < EPS and absf(cam.position.y - 0.5) < EPS
+	var pushed: float = await _push_at_first_step(c, pivot)
+	# One second of real frames is twenty time constants at rate 20, whatever the
+	# headless frame rate.
+	pivot.set_process(true)
+	await get_tree().create_timer(1.0).timeout
+	var homed: bool = absf(pivot.offset) < EPS and absf(pivot.position.y - 0.5) < EPS
 
 	_check(
 		"31 a step up eases the visual down then home",
-		pushed_down and homed,
-		(
-			"offset_at_step=%.4f (expected < -0.1), cam.y=%.4f (expected ~0.50)"
-			% [offset_at_step[0], cam.position.y]
-		),
+		absf(pushed + 0.2) < EPS and homed,
+		"push=%.4f (expected ~-0.2), pivot.y=%.4f (expected ~0.50)" % [pushed, pivot.position.y],
 	)
 	world.queue_free()
 
 
-## The down direction of the same mechanism. Case 05's world: the body snaps down
-## -0.2, so the visual is pushed the opposite way - above rest - before easing
-## back. Sign is the whole point, so it is asserted rather than the magnitude.
+## The down direction, in case 05's world: the body drops 0.2, so the pivot is
+## pushed the same height up - above rest.
 func _case_32_step_down_eases_the_visual_up() -> void:
 	var world: Node3D = _new_world()
 	_add_box(world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
 	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, -0.7, 0.0))
 	var c: StairsBody = _add_character(world, 0.0)
-	_attach_smooth_node(c, 0.0, 20.0)
+	var pivot: STEP_EASE = _attach_step_ease(c, 0.0)
 
-	var offset_at_step: PackedFloat64Array = [0.0]
-	var fired: PackedInt32Array = [0]
-	c.stepped_down.connect(
-		func(_drop: float) -> void:
-			if fired[0] == 0:
-				offset_at_step[0] = _smooth_offset(c)
-			fired[0] += 1,
-	)
-
-	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
-	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
+	var pushed: float = await _push_at_first_step(c, pivot)
 
 	_check(
 		"32 a step down eases the visual up",
-		fired[0] >= 1 and offset_at_step[0] > 0.1,
-		"offset_at_step=%.4f (expected > 0.1 on a downward snap)" % offset_at_step[0],
+		absf(pushed - 0.2) < EPS,
+		"push=%.4f (expected ~+0.2 on a downward step)" % pushed,
 	)
 	world.queue_free()
 
 
-## step_smoothing of zero is the off switch that keeps smooth_node assigned. The
-## body must still step, and the visual must not move from rest at all - accumulate
-## refuses to bank an offset and the tick collapses any residual to zero.
-func _case_33_zero_smoothing_keeps_the_visual_rigid() -> void:
-	var world: Node3D = _new_world()
-	_add_ground(world, 1.0)
-	_add_step(world, 0.2)
-	var c: StairsBody = _add_character(world, 0.0)
-	var cam: Node3D = _attach_smooth_node(c, 0.0, 0.0)
-
-	await _simulate(c, Vector3.ZERO, SETTLE_FRAMES)
-	await _simulate(c, Vector3(WALK_SPEED, 0.0, 0.0), WALK_FRAMES)
-	c.call(&"_tick_step_smoothing", DELTA)
-
-	var stepped: bool = absf(c.global_position.y - (REST_Y + 0.2)) < EPS
-	var rigid: bool = absf(_smooth_offset(c)) < EPS and absf(cam.position.y) < EPS
-	_check(
-		"33 zero step_smoothing keeps the visual rigid",
-		stepped and rigid,
-		(
-			"body_y=%.3f (expected ~%.2f), offset=%.4f cam.y=%.4f (expected ~0)"
-			% [c.global_position.y, REST_Y + 0.2, _smooth_offset(c), cam.position.y]
-		),
-	)
-	world.queue_free()
-
-
-## The accumulate gate rejects a jump larger than twice step_height as a teleport,
-## so a warp or an external shove does not drag the camera across the whole
-## distance. A legitimate step in the same call still banks, clamped to
-## step_height. Driven directly because a teleport is awkward to stage in physics.
-func _case_34_a_teleport_sized_jump_is_not_smoothed() -> void:
+## A burst of steps faster than the decay stacks no further than one step's
+## reach, so the view never lurches by more than a step.
+func _case_33_a_burst_of_steps_is_clamped_to_one_reach() -> void:
 	var world: Node3D = _new_world()
 	_add_ground(world, 1.0)
 	var c: StairsBody = _add_character(world, 0.0)
-	_attach_smooth_node(c, 0.0, 20.0)
 	c.step_height = 0.33
+	var pivot: STEP_EASE = _attach_step_ease(c, 0.0)
 
-	# 5 m is far past 2 * step_height, so it is refused and the offset stays home.
-	c.call(&"_accumulate_step_smoothing", 5.0)
-	var ignored: bool = absf(_smooth_offset(c)) < EPS
-
-	# A real 0.2 step banks, pushed the opposite way and inside the step_height clamp.
-	c.call(&"_accumulate_step_smoothing", 0.2)
-	var banked: bool = is_equal_approx(_smooth_offset(c), -0.2)
+	for _i: int in 3:
+		c.stepped.emit(0.3)
 
 	_check(
-		"34 a teleport-sized jump is not smoothed",
-		ignored and banked,
-		"after teleport offset should be ~0 then ~-0.2, got %.4f" % _smooth_offset(c),
-	)
-	world.queue_free()
-
-
-## The default state: no smooth_node assigned. Smoothing must be entirely inert -
-## processing off, accumulate a no-op - which is what lets every one of the 30
-## cases above run unchanged. The step behaviour itself is covered there; this
-## pins that the new path adds nothing when the export is left empty.
-func _case_35_no_smooth_node_leaves_smoothing_off() -> void:
-	var world: Node3D = _new_world()
-	_add_ground(world, 1.0)
-	var c: StairsBody = _add_character(world, 0.0)
-
-	# _init_step_smoothing runs at NOTIFICATION_READY with smooth_node still null.
-	var processing_off: bool = not c.is_processing()
-	c.call(&"_accumulate_step_smoothing", 0.2)
-	var no_op: bool = absf(_smooth_offset(c)) < EPS
-
-	_check(
-		"35 no smooth_node leaves smoothing off",
-		processing_off and no_op,
-		"is_processing=%s offset=%.4f (expected off and 0)" % [c.is_processing(), _smooth_offset(c)],
+		"33 a burst of steps is clamped to one reach",
+		is_equal_approx(pivot.offset, -0.33),
+		"push=%.4f after three 0.3 steps, expected -0.33" % pivot.offset,
 	)
 	world.queue_free()
 

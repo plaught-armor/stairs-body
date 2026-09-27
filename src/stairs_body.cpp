@@ -2,7 +2,6 @@
 
 #include <godot_cpp/classes/box_shape3d.hpp>
 #include <godot_cpp/classes/cylinder_shape3d.hpp>
-#include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/physics_direct_body_state3d.hpp>
 #include <godot_cpp/classes/physics_direct_space_state3d.hpp>
 #include <godot_cpp/classes/shape3d.hpp>
@@ -33,25 +32,6 @@ StairsBody::StairsBody() {
 	set_sync_to_physics(false);
 	_contact_params->set_recovery_as_collision_enabled(true);
 	_contact_params->set_max_collisions(CONTACT_MAX);
-}
-
-// NOTIFICATION_READY and NOTIFICATION_PROCESS reach the class whatever a script
-// subclass defines, so a subclass with its own _ready or _process cannot shadow
-// these the way it would shadow a method. Process delta is the render frame's:
-// smoothing is visual.
-//
-// An extension class runs in the editor as if it were @tool, which the GDScript
-// original was not. Smoothing there would own smooth_node's local Y and snap back
-// every edit to it, so the editor gets none of it.
-void StairsBody::_notification(int p_what) {
-	if (Engine::get_singleton()->is_editor_hint()) {
-		return;
-	}
-	if (p_what == NOTIFICATION_READY) {
-		_init_step_smoothing();
-	} else if (p_what == NOTIFICATION_PROCESS) {
-		_tick_step_smoothing(get_process_delta_time());
-	}
 }
 
 bool StairsBody::_test_motion(const Ref<PhysicsTestMotionParameters3D> &p_params) {
@@ -101,7 +81,6 @@ void StairsBody::move_and_stair_step() {
 		_settle();
 	}
 	if (_step_rise > 0.0) {
-		_accumulate_step_smoothing(_step_rise);
 		emit_signal("stepped_up", _step_rise);
 		emit_signal("stepped", _step_rise);
 	}
@@ -601,7 +580,6 @@ void StairsBody::_probe_floor() {
 		set_collision_mask(was_mask);
 	}
 	if (drop < 0.0) {
-		_accumulate_step_smoothing(drop);
 		emit_signal("stepped_down", -drop);
 		emit_signal("stepped", drop);
 	}
@@ -728,65 +706,6 @@ Vector3 StairsBody::get_contact_position(int p_index) const {
 	return _contacts[p_index].position;
 }
 
-Node3D *StairsBody::_smooth_node() const {
-	return Object::cast_to<Node3D>(ObjectDB::get_instance(smooth_node_id));
-}
-
-void StairsBody::set_smooth_node(Object *p_node) {
-	// The binding passes any Object through; a typed GDScript export would refuse
-	// one that is not a Node3D, so this does too.
-	ERR_FAIL_COND_MSG(p_node != nullptr && Object::cast_to<Node3D>(p_node) == nullptr, "smooth_node must be a Node3D.");
-	smooth_node_id = p_node == nullptr ? ObjectID() : p_node->get_instance_id();
-}
-
-// Processing is only ever turned on here, never off: a subclass with its own
-// _process has idle processing enabled by the engine, and switching it off from
-// this base would silently kill that _process.
-void StairsBody::_init_step_smoothing() {
-	_smooth_offset_y = 0.0;
-	Node3D *node = _smooth_node();
-	if (node == nullptr) {
-		return;
-	}
-	_smooth_rest_y = node->get_position().y;
-	set_process(true);
-}
-
-// The visual is pushed opposite the body's signed step height, so it holds its
-// world height for a frame before the decay pulls it home. A move over twice the
-// larger reach is a teleport or a shove rather than a step, and is not eased. The
-// offset is clamped to one reach so a burst of steps cannot stack into a lurch.
-void StairsBody::_accumulate_step_smoothing(double p_step_delta_y) {
-	if (_smooth_node() == nullptr || step_smoothing <= 0.0) {
-		return;
-	}
-	const double reach = MAX(step_height, _step_down_reach());
-	if (Math::abs(p_step_delta_y) > reach * 2.0) {
-		return;
-	}
-	_smooth_offset_y = CLAMP(_smooth_offset_y - p_step_delta_y, -reach, reach);
-}
-
-// Render-frame decay of the offset: exp(-rate * dt) closes the same fraction of the
-// distance per second at any frame rate. A rate of zero collapses it at once.
-void StairsBody::_tick_step_smoothing(double p_delta) {
-	Node3D *node = _smooth_node();
-	if (node == nullptr) {
-		return;
-	}
-	if (step_smoothing <= 0.0) {
-		_smooth_offset_y = 0.0;
-	} else {
-		_smooth_offset_y *= Math::exp(-step_smoothing * p_delta);
-		if (Math::abs(_smooth_offset_y) < SMOOTH_EPSILON) {
-			_smooth_offset_y = 0.0;
-		}
-	}
-	Vector3 position = node->get_position();
-	position.y = _smooth_rest_y + _smooth_offset_y;
-	node->set_position(position);
-}
-
 void StairsBody::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("move_and_stair_step"), &StairsBody::move_and_stair_step);
 	ClassDB::bind_static_method("StairsBody", D_METHOD("is_step_surface", "body", "ignore_layers"), &StairsBody::is_step_surface, DEFVAL(0));
@@ -802,11 +721,6 @@ void StairsBody::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_contact_normal", "index"), &StairsBody::get_contact_normal);
 	ClassDB::bind_method(D_METHOD("get_contact_position", "index"), &StairsBody::get_contact_position);
 
-	ClassDB::bind_method(D_METHOD("_init_step_smoothing"), &StairsBody::_init_step_smoothing);
-	ClassDB::bind_method(D_METHOD("_accumulate_step_smoothing", "step_delta_y"), &StairsBody::_accumulate_step_smoothing);
-	ClassDB::bind_method(D_METHOD("_tick_step_smoothing", "delta"), &StairsBody::_tick_step_smoothing);
-	ClassDB::bind_method(D_METHOD("_get_smooth_offset_y"), &StairsBody::_get_smooth_offset_y);
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "_smooth_offset_y", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NONE), "", "_get_smooth_offset_y");
 
 #define STAIRS_BIND(m_name, m_type, m_hint, m_hint_string)                                                     \
 	ClassDB::bind_method(D_METHOD("set_" #m_name, "value"), &StairsBody::set_##m_name);             \
@@ -821,10 +735,6 @@ void StairsBody::_bind_methods() {
 	STAIRS_BIND(max_slides, Variant::INT, PROPERTY_HINT_RANGE, "1,8");
 	STAIRS_BIND(safe_margin, Variant::FLOAT, PROPERTY_HINT_RANGE, "0.001,0.1,0.001");
 	STAIRS_BIND(step_ignore_layers, Variant::INT, PROPERTY_HINT_LAYERS_3D_PHYSICS, "");
-	ADD_GROUP("Step Smoothing", "");
-	STAIRS_BIND(smooth_node, Variant::OBJECT, PROPERTY_HINT_NODE_TYPE, "Node3D");
-	STAIRS_BIND(step_smoothing, Variant::FLOAT, PROPERTY_HINT_RANGE, "0.0,60.0,0.5");
-	ADD_GROUP("", "");
 
 #undef STAIRS_BIND
 

@@ -22,7 +22,6 @@
 // user-facing reference is doc_classes/StairsBody.xml.
 
 #include <godot_cpp/classes/animatable_body3d.hpp>
-#include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/physics_server3d.hpp>
 #include <godot_cpp/classes/physics_shape_query_parameters3d.hpp>
 #include <godot_cpp/classes/physics_test_motion_parameters3d.hpp>
@@ -47,7 +46,6 @@ public:
 	int max_slides = 4;
 	double safe_margin = 0.001;
 	uint32_t step_ignore_layers = 0;
-	double step_smoothing = 20.0;
 
 	Vector3 velocity;
 	Vector3 desired_velocity;
@@ -69,8 +67,6 @@ private:
 	// than resting on it, and _settle pushes it back out. A resting contact recovers
 	// under one margin on both engines (measured 0.75 on Jolt, 0.81 on Godot Physics).
 	static constexpr double EMBED_MARGINS = 4.0;
-	// Eased offset below which the visual is snapped home.
-	static constexpr double SMOOTH_EPSILON = 0.0001;
 	// Cosine above which the step probe counts as along the motion rather than off it.
 	static constexpr double PARALLEL = 0.9999;
 
@@ -86,9 +82,6 @@ private:
 		KIND_WALL,
 		KIND_CEILING,
 	};
-
-	// Held by id: a freed node reads back as null instead of a dangling pointer.
-	ObjectID smooth_node_id;
 
 	Ref<PhysicsTestMotionParameters3D> _params;
 	Ref<PhysicsTestMotionResult3D> _result;
@@ -128,11 +121,6 @@ private:
 	Transform3D _step_to;
 	double _step_rise = 0.0;
 
-	// The visual offset the decay chases back to zero, and smooth_node's authored local
-	// Y it decays toward, captured at NOTIFICATION_READY.
-	double _smooth_offset_y = 0.0;
-	double _smooth_rest_y = 0.0;
-
 	void _clear_contacts();
 	double _step_down_reach() const;
 	Vector3 _intended_motion(bool p_was_on_floor, double p_delta) const;
@@ -158,11 +146,9 @@ private:
 	bool _flat_bottomed();
 	bool _test_motion(const Ref<PhysicsTestMotionParameters3D> &p_params);
 	void _record_contact(int p_index = 0);
-	Node3D *_smooth_node() const;
 
 protected:
 	static void _bind_methods();
-	void _notification(int p_what);
 
 public:
 	StairsBody();
@@ -182,12 +168,6 @@ public:
 	Vector3 get_contact_normal(int p_index) const;
 	Vector3 get_contact_position(int p_index) const;
 
-	// Bound under these names so the shared suite can drive smoothing directly.
-	void _init_step_smoothing();
-	void _accumulate_step_smoothing(double p_step_delta_y);
-	void _tick_step_smoothing(double p_delta);
-	double _get_smooth_offset_y() const { return _smooth_offset_y; }
-
 	void set_step_height(double p_value) { step_height = p_value; }
 	double get_step_height() const { return step_height; }
 	void set_step_down_height(double p_value) { step_down_height = p_value; }
@@ -204,10 +184,6 @@ public:
 	double get_safe_margin() const { return safe_margin; }
 	void set_step_ignore_layers(uint32_t p_value) { step_ignore_layers = p_value; }
 	uint32_t get_step_ignore_layers() const { return step_ignore_layers; }
-	void set_smooth_node(Object *p_node);
-	Node3D *get_smooth_node() const { return _smooth_node(); }
-	void set_step_smoothing(double p_value) { step_smoothing = p_value; }
-	double get_step_smoothing() const { return step_smoothing; }
 	void set_velocity(const Vector3 &p_value) { velocity = p_value; }
 	Vector3 get_velocity() const { return velocity; }
 	void set_desired_velocity(const Vector3 &p_value) { desired_velocity = p_value; }

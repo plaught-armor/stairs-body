@@ -36,7 +36,6 @@ func _run_all() -> void:
 	await _case_b03_a_slow_walk_at_a_high_tick_rate_climbs()
 	await _case_b04_a_zero_forward_floor_stalls_the_slow_climb_under_jolt()
 	await _case_b05_a_step_refused_for_leftover_travel_is_not_remembered()
-	await _case_b06_smoothing_setup_does_not_kill_a_subclass_process()
 	await _case_b07_a_freed_floor_is_let_go()
 	await _case_b08_intent_off_the_motion_does_not_steer_the_body()
 	await _case_b09_held_against_a_wall_is_on_the_wall()
@@ -296,26 +295,6 @@ func _case_b05_a_step_refused_for_leftover_travel_is_not_remembered() -> void:
 			% [c.global_position, first_contact, stepped_at]
 			+ " first contact and the body up on the step after it"
 		),
-	)
-	world.queue_free()
-
-
-## Smoothing turns idle processing on at NOTIFICATION_READY and never off, so a
-## subclass's own _process keeps running with a smooth_node assigned or not.
-func _case_b06_smoothing_setup_does_not_kill_a_subclass_process() -> void:
-	var world: Node3D = _slow_walk_world(false)
-	var c: ProcessingBody = ProcessingBody.new()
-	var pivot: Node3D = Node3D.new()
-	c.add_child(pivot)
-	c.smooth_node = pivot
-	_add_body(world, Vector3(0.0, REST_Y, 0.0), c)
-	await get_tree().process_frame
-	await get_tree().process_frame
-
-	_check(
-		"b06 smoothing setup does not kill a subclass _process",
-		c.is_processing() and c.custom_process_frames > 0,
-		("is_processing=%s custom_process_frames=%d" % [c.is_processing(), c.custom_process_frames]),
 	)
 	world.queue_free()
 
@@ -756,22 +735,6 @@ func _case_b17_a_pole_clipped_in_passing_is_listed() -> void:
 		"pole listed %d times, pos=%v expected listed>0 and x>4" % [listed, c.global_position],
 	)
 	world.queue_free()
-
-
-## A subclass with its own _ready and _process, the shape a game's player script
-## takes. Counts its own process frames.
-class ProcessingBody:
-	extends StairsBody
-
-	var custom_process_frames: int = 0
-
-
-	func _ready() -> void:
-		pass
-
-
-	func _process(_delta: float) -> void:
-		custom_process_frames += 1
 
 
 ## Counts engine errors, so a case can say none were raised. Warnings reach the
