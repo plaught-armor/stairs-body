@@ -40,8 +40,8 @@ fi
 echo "Using $GODOT"
 
 # StairsBody is a GDExtension; build it first with `scons` at the repo root.
-if ! compgen -G "$PROJECT/addons/stairs-character/bin/libstairsbody.*" >/dev/null; then
-	echo "No StairsBody library in addons/stairs-character/bin. Run scons at the repo root." >&2
+if ! compgen -G "$PROJECT/addons/stairs-body/bin/libstairsbody.*" >/dev/null; then
+	echo "No StairsBody library in addons/stairs-body/bin. Run scons at the repo root." >&2
 	exit 127
 fi
 

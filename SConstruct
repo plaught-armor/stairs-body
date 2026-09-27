@@ -18,7 +18,7 @@ if env["target"] in ["editor", "template_debug"]:
     sources.append(env.GodotCPPDocData("src/gen/doc_data.gen.cpp", source=Glob("doc_classes/*.xml")))
 
 library = env.SharedLibrary(
-    "addons/stairs-character/bin/libstairsbody{}{}".format(env["suffix"], env["SHLIBSUFFIX"]),
+    "addons/stairs-body/bin/libstairsbody{}{}".format(env["suffix"], env["SHLIBSUFFIX"]),
     source=sources,
 )
 

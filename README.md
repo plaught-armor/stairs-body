@@ -74,7 +74,7 @@ Both GDScript classes, and the benchmarks and diagnostics written for
 
 ## Install
 
-Copy `addons/stairs-character/` into your project, **keeping the folder name**:
+Copy `addons/stairs-body/` into your project, **keeping the folder name**:
 the library and icon paths are absolute `res://` paths. The `.gdextension` file
 registers `StairsBody` when the project loads. Enabling the plugin in **Project
 Settings > Plugins** is optional; it only lists the addon there.

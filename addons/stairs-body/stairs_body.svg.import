@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://dnp5exoatagfq"
-path="res://.godot/imported/stairs_character.svg-2db24d3fa9e14d38988b4c5cf3fc7b53.ctex"
+uid="uid://21i0mivoyxn8"
+path="res://.godot/imported/stairs_body.svg-f520ac810923bccfb12f17f9e2c06be4.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://addons/stairs-character/stairs_character.svg"
-dest_files=["res://.godot/imported/stairs_character.svg-2db24d3fa9e14d38988b4c5cf3fc7b53.ctex"]
+source_file="res://addons/stairs-body/stairs_body.svg"
+dest_files=["res://.godot/imported/stairs_body.svg-f520ac810923bccfb12f17f9e2c06be4.ctex"]
 
 [params]
 
@@ -26,6 +26,8 @@ compress/normal_map=0
 compress/channel_pack=0
 mipmaps/generate=false
 mipmaps/limit=-1
+mipmaps/preserve_alpha_test_coverage=false
+mipmaps/alpha_test_threshold=0.5
 roughness/mode=0
 roughness/src_normal=""
 process/channel_remap/red=0

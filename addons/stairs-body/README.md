@@ -1,4 +1,4 @@
-# Stairs Character
+# Stairs Body
 
 `StairsBody` is a character body that walks up and down steps. It sweeps the body
 itself with `body_test_motion` rather than raycasting, so a character steps onto
@@ -7,7 +7,7 @@ whatever its collider would actually fit on. It is a C++ GDExtension built on
 
 ## Install
 
-Copy `addons/stairs-character/` into your project, **keeping the folder name**:
+Copy `addons/stairs-body/` into your project, **keeping the folder name**:
 the library and icon paths are absolute `res://` paths. Enabling the plugin in
 **Project Settings > Plugins** is optional; it only lists the addon there.
 
