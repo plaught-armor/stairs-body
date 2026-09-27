@@ -39,6 +39,10 @@ func _run_all() -> void:
 	await _case_b07_a_freed_floor_is_let_go()
 	await _case_b08_intent_off_the_motion_does_not_steer_the_body()
 	await _case_b09_held_against_a_wall_is_on_the_wall()
+	await _case_b10_a_loose_crate_is_not_stepped_onto()
+	await _case_b11_a_frozen_crate_is_stepped_onto()
+	await _case_b12_a_walk_down_a_flight_steps_every_tread()
+	await _case_b13_a_step_lands_through_an_ignored_body()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -409,6 +413,195 @@ func _case_b09_held_against_a_wall_is_on_the_wall() -> void:
 		"b09 held against a wall is on the wall",
 		c.is_on_wall() and c.get_wall_normal().dot(Vector3.LEFT) > 0.9,
 		"is_on_wall=%s wall_normal=%v" % [c.is_on_wall(), c.get_wall_normal()],
+	)
+	world.queue_free()
+
+
+## Walks the body at a crate 0.3 m tall - inside step_height - for two seconds and
+## returns the most it rose. The crate is simulating unless `frozen`.
+func _walk_into_crate(frozen: bool) -> float:
+	const CRATE: Vector3 = Vector3(0.45, 0.3, 0.45)
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(40.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	var crate: RigidBody3D = RigidBody3D.new()
+	var crate_shape: CollisionShape3D = CollisionShape3D.new()
+	var crate_box: BoxShape3D = BoxShape3D.new()
+	crate_box.size = CRATE
+	crate_shape.shape = crate_box
+	crate.add_child(crate_shape)
+	crate.mass = 10.0
+	crate.freeze = frozen
+	world.add_child(crate)
+	crate.global_position = Vector3(1.5, CRATE.y * 0.5, 0.0)
+	var c: StairsBody = _add_body(world, Vector3(0.0, REST_Y, 0.0))
+	for _i: int in 30:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * DELTA
+		c.move_and_stair_step()
+	var base: float = c.global_position.y
+	var rise: float = 0.0
+	for _i: int in 120:
+		await get_tree().physics_frame
+		c.velocity = Vector3(3.0, c.velocity.y - GRAVITY * DELTA, 0.0)
+		c.move_and_stair_step()
+		rise = maxf(rise, c.global_position.y - base)
+	if crate.global_position.y < 0.0:
+		push_error("[b10/b11] the crate fell out of the world - the lane measures nothing")
+		rise = -1.0
+	world.queue_free()
+	return rise
+
+
+## A step is a teleport, so committing one onto a simulating body leaves the solver
+## to separate them by moving the body underneath - which rises and offers the next
+## frame another step. Measured under Jolt before the refusal, with this crate
+## dropped from 5 cm up: it lifted the body 1.085 m and left at 5.6 m/s. Resting as
+## here, both engines just climb it - still a step onto something that can move out
+## from under the body. b11 is the control.
+func _case_b10_a_loose_crate_is_not_stepped_onto() -> void:
+	var rise: float = await _walk_into_crate(false)
+	_check(
+		"b10 a loose crate is not stepped onto",
+		rise >= 0.0 and rise < 0.05,
+		"rose %.3f m walking into a simulating crate 0.3 m tall" % rise,
+	)
+
+
+## The same crate frozen is static to the physics server, and a stair like any other.
+func _case_b11_a_frozen_crate_is_stepped_onto() -> void:
+	var rise: float = await _walk_into_crate(true)
+	_check(
+		"b11 a frozen crate is stepped onto",
+		absf(rise - 0.3) < EPS,
+		"rose %.3f m walking onto a frozen crate 0.3 m tall" % rise,
+	)
+
+
+## Walking off a tread, a flat bottom's trailing rim can drop onto the curve Jolt
+## rounds a box's top edge with (its margin, 0.04 m by default here) and read a
+## steep normal a few millimetres down. Measured before _probe_off_corner, with
+## a game's player cylinder: airborne on 3 of 16 treads at walk speed, falling
+## across them. Where a rim meets an edge is chaotic in speed and radius, so the
+## lanes are a game's four speeds with its player's collider. Without the fix the
+## three slower lanes fail; the sprint lane never meets a curve and is a control.
+## A shift of one margin instead of the curve's depth fails the same three. Godot
+## Physics has square edges, and passes without the fix.
+func _case_b12_a_walk_down_a_flight_steps_every_tread() -> void:
+	const TREADS: int = 16
+	const RISE: float = 0.25
+	const GOING: float = 0.28
+	var speeds: PackedFloat32Array = [0.818, 1.944, 3.828, 5.687]
+	const LANE_GAP: float = 2.0
+	var world: Node3D = _new_world()
+	var width: float = LANE_GAP * speeds.size()
+	# Long enough that the fastest lane is still on it after the last frame.
+	_add_box(world, Vector3(width, 1.0, 40.0), Vector3(0.0, -0.5, -20.0))
+	for i: int in TREADS:
+		_add_box(
+			world,
+			Vector3(width, 1.0, GOING),
+			Vector3(0.0, RISE * (i + 1) - 0.5, GOING * (i + 0.5)),
+		)
+	var top: float = RISE * TREADS
+	_add_box(world, Vector3(width, 1.0, 2.0), Vector3(0.0, top - 0.5, GOING * TREADS + 1.0))
+	var bodies: Array[StairsBody] = []
+	var downs: PackedInt32Array = []
+	var air: PackedInt32Array = []
+	for lane: int in speeds.size():
+		var at: Vector3 = Vector3(LANE_GAP * (lane - 1.5), top + 0.6, GOING * TREADS + 1.0)
+		bodies.append(_add_player_body(world, at))
+		downs.append(0)
+		air.append(0)
+	var counts: Array[PackedInt32Array] = [downs]
+	for lane: int in bodies.size():
+		bodies[lane].stepped_down.connect(
+			func() -> void:
+				counts[0][lane] += 1,
+		)
+	for _i: int in 40:
+		await get_tree().physics_frame
+		for c: StairsBody in bodies:
+			c.velocity.y -= GRAVITY * DELTA
+			c.move_and_stair_step()
+	for _i: int in 300:
+		await get_tree().physics_frame
+		for lane: int in bodies.size():
+			var c: StairsBody = bodies[lane]
+			c.velocity = Vector3(0.0, c.velocity.y - GRAVITY * DELTA, -speeds[lane])
+			c.desired_velocity = Vector3(0.0, 0.0, -speeds[lane])
+			c.move_and_stair_step()
+			if not c.is_on_floor():
+				air[lane] += 1
+
+	for lane: int in bodies.size():
+		_check(
+			"b12 a walk down a flight at %.3f m/s never leaves the floor" % speeds[lane],
+			air[lane] == 0,
+			"airborne %d frames, %d step downs" % [air[lane], counts[0][lane]],
+		)
+	world.queue_free()
+
+
+## a game's player collider: origin at the feet, which is where it is measured.
+func _add_player_body(world: Node3D, at: Vector3) -> StairsBody:
+	var c: StairsBody = StairsBody.new()
+	c.step_down_height = 0.5
+	var shape_node: CollisionShape3D = CollisionShape3D.new()
+	var cylinder: CylinderShape3D = CylinderShape3D.new()
+	cylinder.radius = 0.27
+	cylinder.height = 1.75
+	cylinder.margin = COLLIDER_MARGIN
+	shape_node.shape = cylinder
+	shape_node.position = Vector3(0.0, 0.875, 0.0)
+	c.add_child(shape_node)
+	world.add_child(c)
+	c.global_position = at
+	return c
+
+
+## A body on a step_ignore_layers layer lying on a kerb's top. The step sweeps run
+## with that layer out of the mask, so the down leg lands on the kerb through it;
+## without the masking it lands on the ignored body and is refused. The ignored body
+## is loose, as a body is in a game. Past the kerb's edge the slab still blocks the
+## body, as a body would, so only the climb is asserted.
+func _case_b13_a_step_lands_through_an_ignored_body() -> void:
+	const IGNORED_LAYER: int = 2
+	const SLAB: Vector3 = Vector3(0.6, 0.05, 1.0)
+	var world: Node3D = _slow_walk_world(true)
+	var slab: RigidBody3D = RigidBody3D.new()
+	var slab_shape: CollisionShape3D = CollisionShape3D.new()
+	var slab_box: BoxShape3D = BoxShape3D.new()
+	slab_box.size = SLAB
+	slab_shape.shape = slab_box
+	slab.add_child(slab_shape)
+	slab.collision_layer = IGNORED_LAYER
+	slab.collision_mask = 1 | IGNORED_LAYER
+	world.add_child(slab)
+	slab.global_position = Vector3(1.0 + SLAB.x * 0.5, STEP_TOP + SLAB.y * 0.5, 0.0)
+	var c: StairsBody = StairsBody.new()
+	c.collision_mask = 1 | IGNORED_LAYER
+	c.step_ignore_layers = IGNORED_LAYER
+	_add_body(world, Vector3(0.0, REST_Y, 0.0), c)
+	# Shared with the handler and not packed, for the reason given in b05.
+	var ups: Array[int] = [0] # gdlint: ignore[S6]
+	c.stepped_up.connect(
+		func() -> void:
+			ups[0] += 1,
+	)
+	for _i: int in 15:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * DELTA
+		c.move_and_stair_step()
+	for _i: int in 60:
+		await get_tree().physics_frame
+		c.velocity = Vector3(1.5, c.velocity.y - GRAVITY * DELTA, 0.0)
+		c.desired_velocity = Vector3(1.5, 0.0, 0.0)
+		c.move_and_stair_step()
+
+	_check(
+		"b13 a step lands through an ignored body",
+		ups[0] >= 1 and absf(c.global_position.y - (STEP_TOP + REST_Y)) < EPS,
+		"%d step ups, ended at %v" % [ups[0], c.global_position],
 	)
 	world.queue_free()
 

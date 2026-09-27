@@ -42,6 +42,12 @@ signal stepped_down
 ## Collision margin used by every sweep.
 @export_range(0.001, 0.1, 0.001) var safe_margin: float = 0.001
 
+## Collision layers a step is never committed onto, though the body still collides
+## with them: bodies too small or too self-driving to be a stair. Taken out of the
+## body's mask while the step and floor-probe sweeps run, so those sweeps see the
+## surface underneath instead.
+@export_flags_3d_physics var step_ignore_layers: int = 0
+
 @export_category("Step Smoothing")
 ## The visual node whose local Y is eased after a step, so the camera or mesh does
 ## not pop when the body snaps up or down. Unassigned, smoothing is off.
@@ -475,10 +481,39 @@ func _step_probe(motion: Vector3, may_step: bool, delta: float) -> Vector3:
 	return motion - horizontal + direction.normalized() * reach
 
 
+## Whether a step may be committed onto `body`: anything the physics server is not
+## simulating - static geometry, kinematic platforms, frozen rigid bodies - and not
+## on `ignore_layers`. A step is a teleport rather than a solve, so setting the body
+## down on a simulating one leaves the solver to separate them by moving the only
+## thing that can move, which raises the surface and offers the next frame a fresh
+## step. Measured under Jolt: a loose 0.45 x 0.3 x 0.45 m crate lifted the body
+## 1.085 m and left at 5.6 m/s, the same at 10 kg and 30 kg. Same rule as the one
+## a game carries on StairsCharacter.
+static func is_step_surface(body: RID, ignore_layers: int = 0) -> bool:
+	if ignore_layers != 0 and (PhysicsServer3D.body_get_collision_layer(body) & ignore_layers) != 0:
+		return false
+	var mode: PhysicsServer3D.BodyMode = PhysicsServer3D.body_get_mode(body)
+	return (
+		mode != PhysicsServer3D.BODY_MODE_RIGID and mode != PhysicsServer3D.BODY_MODE_RIGID_LINEAR
+	)
+
+
+# The step with step_ignore_layers out of the mask. body_test_motion takes no mask
+# of its own and reads the body's, so this is the only way to ask it early.
+func _try_step(at: Transform3D, remainder: Vector3, wall_normal: Vector3, delta: float) -> bool:
+	if step_ignore_layers == 0:
+		return _step_sweeps(at, remainder, wall_normal, delta)
+	var was_mask: int = collision_mask
+	collision_mask = was_mask & ~step_ignore_layers
+	var stepped_ok: bool = _step_sweeps(at, remainder, wall_normal, delta)
+	collision_mask = was_mask
+	return stepped_ok
+
+
 # Up, forward, down from where the move met a steep face. On success _step_to
 # holds the landing and the floor state is set from the down sweep, so the floor
 # probe does not run again this frame.
-func _try_step(at: Transform3D, remainder: Vector3, wall_normal: Vector3, _delta: float) -> bool:
+func _step_sweeps(at: Transform3D, remainder: Vector3, wall_normal: Vector3, _delta: float) -> bool:
 	var wall_rid: RID = _result.get_collider_rid(0)
 	if _refused_here(at.origin, wall_normal, wall_rid):
 		return false
@@ -512,6 +547,10 @@ func _try_step(at: Transform3D, remainder: Vector3, wall_normal: Vector3, _delta
 	if normal.angle_to(Vector3.UP) > floor_max_angle:
 		return false
 	if landed.origin.y - at.origin.y < safe_margin:
+		return false
+	# Asked of the placement, not of the face first hit: a loose object leaning on a
+	# kerb must not stop the body climbing the kerb.
+	if not is_step_surface(_result.get_collider_rid(0), step_ignore_layers):
 		return false
 
 	_record_floor(normal)
@@ -552,7 +591,26 @@ func _remember_refusal(origin: Vector3, normal: Vector3, rid: RID) -> void:
 
 
 # One sweep down: keeps a walker on the floor, steps it down, and finds ledges.
+# Masked the same way and for the same reason as _try_step. The step-down is
+# announced after the mask is back, so a handler sees the body's own mask.
 func _probe_floor() -> void:
+	var drop: float = 0.0
+	if step_ignore_layers == 0:
+		drop = _probe_sweep()
+	else:
+		var was_mask: int = collision_mask
+		collision_mask = was_mask & ~step_ignore_layers
+		drop = _probe_sweep()
+		collision_mask = was_mask
+	if drop < 0.0:
+		_accumulate_step_smoothing(drop)
+		stepped_down.emit()
+		stepped.emit()
+
+
+# Returns the height change when it stepped the body down, a negative number, and
+# 0.0 when it did not.
+func _probe_sweep() -> float:
 	_params.from = global_transform
 	_params.motion = Vector3.DOWN * _step_down_reach()
 	if not PhysicsServer3D.body_test_motion(get_rid(), _params, _result):
@@ -563,27 +621,60 @@ func _probe_floor() -> void:
 			# which is what Godot Physics reports there. Perch, as below, keeping last
 			# frame's floor normal and collider - the body has not moved off them.
 			_on_floor = true
-		return
+		return 0.0
 	var normal: Vector3 = _result.get_collision_normal(0)
-	var travel: Vector3 = _result.get_travel()
 	if normal.angle_to(Vector3.UP) > floor_max_angle:
 		if not _flat_bottomed():
 			# A rounded bottom meets a tread's corner before its face and reports the
 			# corner's normal, so steepness says nothing here; take it as support.
 			normal = Vector3.UP
-		elif travel.length() < safe_margin * 2.0:
+		elif _result.get_travel().length() < safe_margin * 2.0:
 			# Already touching: the rim is resting on an edge, which still holds the
 			# body up. Keep last frame's floor; the next probe clears the edge.
 			_on_floor = true
-			return
+			return 0.0
+		elif not _probe_off_corner(normal, _result.get_travel().length()):
+			return 0.0
 		else:
-			return
+			normal = _result.get_collision_normal(0)
+	# From where the probe started, which _probe_off_corner may have moved.
+	var travel: Vector3 = _params.from.origin + _result.get_travel() - global_position
+	var step_down: bool = -travel.y >= _STEP_DOWN_SIGNAL_MIN
+	# A step down is a placement too; see is_step_surface. Keeping contact with a
+	# loose body already underfoot is not, and stays allowed. Defensive and untested,
+	# as on a game's StairsCharacter: a probe walked off a kerb finds the floor
+	# beside a loose object, not the object.
+	if step_down and not is_step_surface(_result.get_collider_rid(0), step_ignore_layers):
+		return 0.0
 	global_transform = global_transform.translated(travel)
 	_record_floor(normal)
-	if -travel.y >= _STEP_DOWN_SIGNAL_MIN:
-		_accumulate_step_smoothing(travel.y)
-		stepped_down.emit()
-		stepped.emit()
+	return travel.y if step_down else 0.0
+
+
+# A flat bottom that drops onto a steep contact from above the edge it is walking
+# off has met the edge's rounded top: Jolt gives a box's edges its margin as a
+# convex radius, and a bottom level with the top of that curve meets it partway
+# down, on the curve's side. Nothing up there holds the body - measured, a 0.27 m
+# cylinder walking down 0.25 m treads at 1.9 m/s met it on 3 treads in 16 and fell
+# instead of stepping. Shift off the curve, away from it and level, then probe
+# again. For a curve of radius r met at angle a from up after a drop d, the contact
+# is r sin(a) = d / tan(a / 2) in from the curve's top, which is what the shift
+# clears, plus a margin. The shift grows without bound as the angle nears zero,
+# which only a floor_max_angle near zero lets through, so it is capped at the
+# probe's reach. Returns whether _result holds a walkable floor, probed from
+# _params.from.
+func _probe_off_corner(normal: Vector3, drop: float) -> bool:
+	var clear: float = drop / tan(normal.angle_to(Vector3.UP) * 0.5) + safe_margin
+	var shift: Vector3 = (normal * _HORIZONTAL).normalized() * minf(clear, _step_down_reach())
+	var from: Transform3D = _params.from
+	_params.motion = shift
+	if PhysicsServer3D.body_test_motion(get_rid(), _params, _result):
+		return false
+	_params.from = from.translated(shift)
+	_params.motion = Vector3.DOWN * _step_down_reach()
+	if not PhysicsServer3D.body_test_motion(get_rid(), _params, _result):
+		return false
+	return _result.get_collision_normal(0).angle_to(Vector3.UP) <= floor_max_angle
 
 
 # Whether every enabled shape on the body has a flat bottom, which is what lets a
