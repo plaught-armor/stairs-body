@@ -133,7 +133,7 @@ climbing with one.
 | `min_step_forward` | `0.02` | Shortest distance a step probe looks ahead, whatever the tick rate. See [Tick rate](#tick-rate). |
 | `step_slide_iterations` | `4` | Slides for the forward leg of a step, so a wall beside the stairs does not block the climb. |
 | `floor_max_angle` | 45° | Steepest surface that counts as floor. |
-| `max_slides` | `4` | Slides for the main move. |
+| `max_slides` | `4` | Slides for the main move. On the floor, a wall met within 15° of head-on stops the slide, as `CharacterBody3D`'s default `wall_min_slide_angle` does. |
 | `safe_margin` | `0.001` | Collision margin for every sweep. |
 | `step_ignore_layers` | none | Layers a step is never placed onto, though the body still collides with them: bodies too small or too self-driving to be a stair. A floor on them holds the body up but never carries it as a platform. |
 | `velocity` | zero | Velocity in m/s. After each move it is clipped against what the body hit, and its downward part is zeroed on the floor. |

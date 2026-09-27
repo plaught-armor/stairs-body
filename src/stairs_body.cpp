@@ -230,10 +230,17 @@ void StairsBody::_slide(Vector3 p_motion, bool p_may_step, double p_delta, bool 
 			// rather than up it.
 			normal = (normal * HORIZONTAL_MASK).normalized();
 		}
-		p_motion = _clip(remainder, normal, previous_normal);
 		if (velocity.dot(normal) < 0.0) {
 			velocity = velocity.slide(normal);
 		}
+		if (kind == KIND_WALL && p_may_step && (sweep * HORIZONTAL_MASK).normalized().dot(-normal) > HEAD_ON) {
+			// Met nearly head-on, the slide along the face is a small fraction of the
+			// remainder, and each further sweep in a crowd pressed together meets the
+			// next neighbour and pays to push out of it. Stop, as CharacterBody3D does
+			// under wall_min_slide_angle.
+			break;
+		}
+		p_motion = _clip(remainder, normal, previous_normal);
 		previous_normal = normal;
 	}
 	set_global_transform(from);

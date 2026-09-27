@@ -69,6 +69,9 @@ private:
 	static constexpr double EMBED_MARGINS = 4.0;
 	// Cosine above which the step probe counts as along the motion rather than off it.
 	static constexpr double PARALLEL = 0.9999;
+	// Cosine of 15 degrees, CharacterBody3D's default wall_min_slide_angle: a grounded
+	// slide stops against a wall met closer to head-on than this.
+	static constexpr double HEAD_ON = 0.9659258262890683;
 
 	// One contact the last move met; see _record_contact for which ones count.
 	struct Contact {

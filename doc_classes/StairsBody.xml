@@ -116,7 +116,7 @@
 			Allow a step this frame even when airborne. Cleared after each move.
 		</member>
 		<member name="max_slides" type="int" setter="set_max_slides" getter="get_max_slides" default="4">
-			Slide iterations for the main move.
+			Slide iterations for the main move. On the floor, a slide stops against a wall met within 15 degrees of head-on rather than sliding along it, as [CharacterBody3D] does under its default [member CharacterBody3D.wall_min_slide_angle]. In a crowd pressed together, each further slide meets the next neighbour.
 		</member>
 		<member name="min_step_forward" type="float" setter="set_min_step_forward" getter="get_min_step_forward" default="0.02">
 			Smallest distance a step probe looks ahead, whatever the tick rate.
