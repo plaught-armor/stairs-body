@@ -48,6 +48,7 @@ func _run_all() -> void:
 	await _case_b16_a_refused_step_lists_none_of_its_sweeps()
 	await _case_b17_a_pole_clipped_in_passing_is_listed()
 	await _case_b18_a_floor_on_an_ignored_layer_is_never_ridden()
+	await _case_b19_a_step_up_is_never_followed_by_a_false_step_down()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -788,6 +789,57 @@ func _case_b18_a_floor_on_an_ignored_layer_is_never_ridden() -> void:
 		)
 		% [carried[0], ignored[0], ignored[1], BODY_HEIGHT + REST_Y],
 	)
+
+
+## a game's player running a flight: a 0.27 x 1.75 m cylinder at 3.83 m/s up
+## 0.25 m rises on 0.5 m goings. Under Jolt, whose box edges are rounded by their
+## margin, a step can land with only the rim over the nosing and read a tilted
+## normal; followed as a slope, it lifted the body and the probe dropped it back,
+## a step down reported on a tick the body rose. Measured once in 90 ticks here.
+func _case_b19_a_step_up_is_never_followed_by_a_false_step_down() -> void:
+	const RISE: float = 0.25
+	const GOING: float = 0.5
+	const TREADS: int = 8
+	const SPEED: float = 3.83
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(20.0, 1.0, 8.0), Vector3(-8.0, -0.5, 0.0))
+	for k: int in TREADS:
+		var top: float = RISE * float(k + 1)
+		_add_box(
+			world,
+			Vector3(GOING, top, 8.0),
+			Vector3(2.0 + GOING * (float(k) + 0.5), top * 0.5, 0.0),
+		)
+	var c: StairsBody = _add_player_body(world, Vector3.ZERO)
+	var drops: PackedInt32Array = [0]
+	c.stepped_down.connect(
+		func(_drop: float) -> void:
+			drops[0] += 1,
+	)
+	for _i: int in 15:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * DELTA
+		c.move_and_stair_step()
+	var false_drops: int = 0
+	for _i: int in 90:
+		await get_tree().physics_frame
+		var before_y: float = c.global_position.y
+		var before_drops: int = drops[0]
+		c.velocity.x = SPEED
+		c.velocity.y -= GRAVITY * DELTA
+		c.desired_velocity = Vector3(SPEED, 0.0, 0.0)
+		c.move_and_stair_step()
+		if drops[0] > before_drops and c.global_position.y > before_y:
+			false_drops += 1
+	var top_y: float = RISE * float(TREADS)
+
+	_check(
+		"b19 a step up is never followed by a false step down",
+		false_drops == 0 and absf(c.global_position.y - top_y) < EPS,
+		"%d step downs on ticks the body rose, y=%.4f expected ~%.3f (the top tread)"
+		% [false_drops, c.global_position.y, top_y],
+	)
+	world.queue_free()
 
 
 ## Counts engine errors, so a case can say none were raised. Warnings reach the

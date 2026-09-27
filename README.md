@@ -324,7 +324,7 @@ Runs two headless suites and exits with the total number of failures:
 
 - `test/test_stairs.gd`, 43 checks. They began as `StairsCharacter`'s suite and
   kept its case numbers, so the gaps are cases that tested that class's own API.
-- `test/test_stairs_body.gd`, 19 checks for machinery the first suite does not
+- `test/test_stairs_body.gd`, 20 checks for machinery the first suite does not
   reach: the tunnel guard, the refusal cache, the loose-step rule, the Jolt edge
   handling and the contact list.
 

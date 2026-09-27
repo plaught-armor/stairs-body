@@ -540,7 +540,14 @@ bool StairsBody::_step_sweeps(const Transform3D &p_at, const Vector3 &p_remainde
 		return false;
 	}
 
-	_record_floor(normal);
+	// Jolt rounds a box's edges by its margin, so a flat bottom set down with only
+	// its rim over the tread rests on the curve and reads a tilted normal. Followed
+	// as a slope on the next move, that normal lifted the body off the tread and the
+	// floor probe dropped it back: a 0.27 m cylinder running up 0.25 m treads read
+	// (-0.19, 0.98) with 17 mm of rim over the nosing, then rose 12 mm and emitted a
+	// 12 mm step down on a tick it went up. A flat bottom that lands walkable on a
+	// step is on a tread, and a tread is level.
+	_record_floor(normal == WORLD_UP || !_flat_bottomed() ? normal : WORLD_UP);
 	_step_to = landed;
 	_step_rise = landed.origin.y - p_at.origin.y;
 	return true;
