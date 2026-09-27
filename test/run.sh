@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Runs the headless StairsCharacter suite. Exit code is the number of failures.
+# Runs the headless StairsCharacter and StairsBody suites. Exit code is the total
+# number of failures.
 #
 # Godot is not on PATH on this machine, so point GODOT at a binary if none of the
 # candidates below exist:
@@ -45,4 +46,14 @@ if [[ ! -f "$PROJECT/.godot/global_script_class_cache.cfg" ]]; then
 	"$GODOT" --headless --path "$PROJECT" --import >/dev/null
 fi
 
-"$GODOT" --headless --path "$PROJECT" res://test/test_stairs.tscn
+# The shared StairsBody suite is generated from test_stairs.gd; see the generator.
+python3 "$PROJECT/test/gen_stairs_body_suite.py"
+
+# Every suite runs even when an earlier one fails, and the exit code is the total.
+failed=0
+for scene in test_stairs.tscn generated/test_stairs_body_shared.tscn test_stairs_body.tscn; do
+	status=0
+	"$GODOT" --headless --path "$PROJECT" "res://test/$scene" || status=$?
+	failed=$((failed + status))
+done
+exit "$failed"

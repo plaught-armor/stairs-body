@@ -1,0 +1,452 @@
+extends Node3D
+
+## Headless cases for StairsBody's own machinery - the parts StairsCharacter does
+## not have, so the shared suite cannot reach them.
+##
+##     godot --headless --path <repo root> res://test/test_stairs_body.tscn
+##
+## Exit code is the number of failed cases. `print` is the harness output.
+
+const DELTA: float = 1.0 / 60.0
+const BODY_RADIUS: float = 0.3
+const BODY_HEIGHT: float = 1.8
+const REST_Y: float = 0.9
+const COLLIDER_MARGIN: float = 0.001
+const GRAVITY: float = 9.8
+const EPS: float = 0.05
+## A tick rate whose frames move a slow walk less than a margin, and less than the
+## gap Jolt leaves at a face (4.2 mm).
+const HIGH_RATE: int = 240
+const SLOW_WALK: float = 0.2
+const STEP_TOP: float = 0.2
+
+var _passed: int = 0
+var _failed: int = 0
+
+
+func _ready() -> void:
+	call_deferred(&"_run_all")
+
+
+func _run_all() -> void:
+	print("--- StairsBody own-machinery run ---")
+	await _case_b01_a_fall_past_a_ledge_edge_does_not_end_inside_the_floor()
+	await _case_b02_a_slow_walk_at_a_high_tick_rate_moves()
+	await _case_b03_a_slow_walk_at_a_high_tick_rate_climbs()
+	await _case_b04_a_zero_forward_floor_stalls_the_slow_climb_under_jolt()
+	await _case_b05_a_step_refused_for_leftover_travel_is_not_remembered()
+	await _case_b06_smoothing_setup_does_not_kill_a_subclass_process()
+	await _case_b07_a_freed_floor_is_let_go()
+	await _case_b08_intent_off_the_motion_does_not_steer_the_body()
+	await _case_b09_held_against_a_wall_is_on_the_wall()
+	print("--- %d passed, %d failed ---" % [_passed, _failed])
+	get_tree().quit(_failed)
+
+
+func _check(case_name: String, ok: bool, detail: String) -> void:
+	if ok:
+		_passed += 1
+		print("PASS  %s" % case_name)
+	else:
+		_failed += 1
+		print("FAIL  %s — %s" % [case_name, detail])
+
+
+func _new_world() -> Node3D:
+	var world: Node3D = Node3D.new()
+	add_child(world)
+	return world
+
+
+func _add_box(world: Node3D, size: Vector3, centre: Vector3) -> StaticBody3D:
+	var body: StaticBody3D = StaticBody3D.new()
+	var shape_node: CollisionShape3D = CollisionShape3D.new()
+	var box: BoxShape3D = BoxShape3D.new()
+	box.size = size
+	shape_node.shape = box
+	body.add_child(shape_node)
+	world.add_child(body)
+	body.global_position = centre
+	return body
+
+
+func _is_jolt() -> bool:
+	return ProjectSettings.get_setting("physics/3d/physics_engine") == "Jolt Physics"
+
+
+## Flat ground, and when `with_step` a step whose face is at x = 1.0 and top at
+## STEP_TOP. The body starts at x = 0.4 and settles there before it walks.
+func _slow_walk_world(with_step: bool) -> Node3D:
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(11.0, 1.0, 8.0), Vector3(-4.5, -0.5, 0.0))
+	if with_step:
+		_add_box(world, Vector3(4.0, 2.0, 8.0), Vector3(3.0, STEP_TOP - 1.0, 0.0))
+	return world
+
+
+## Settles `c`, then walks it along +x at `speed` for `seconds` at HIGH_RATE.
+func _slow_walk(c: StairsBody, seconds: float, speed: float = SLOW_WALK) -> void:
+	var delta: float = 1.0 / float(HIGH_RATE)
+	for _i: int in HIGH_RATE / 4:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * delta
+		c.move_and_stair_step()
+	for _i: int in int(seconds * float(HIGH_RATE)):
+		await get_tree().physics_frame
+		c.velocity.x = speed
+		c.velocity.y -= GRAVITY * delta
+		c.desired_velocity = Vector3(speed, 0.0, 0.0)
+		c.move_and_stair_step()
+
+
+func _add_body(world: Node3D, at: Vector3, c: StairsBody = StairsBody.new()) -> StairsBody:
+	var shape_node: CollisionShape3D = CollisionShape3D.new()
+	var cylinder: CylinderShape3D = CylinderShape3D.new()
+	cylinder.radius = BODY_RADIUS
+	cylinder.height = BODY_HEIGHT
+	cylinder.margin = COLLIDER_MARGIN
+	shape_node.shape = cylinder
+	c.add_child(shape_node)
+	world.add_child(c)
+	c.global_position = at
+	return c
+
+
+## Jolt's body_test_motion can report no collision and the full motion as travel
+## when its cast stopped on a contact its own motion-direction filter then threw
+## away. Measured: a cylinder whose rim sits 10 um past a ledge edge, moved 0.33 m
+## straight down, ends 0.13 m inside the floor 0.2 m below. x = 2.29999 over an
+## edge at 2.0 is one such spot; its neighbours either side are not.
+##
+## The fall is one frame at 19.8 m/s so the move sweep is exactly that 0.33 m. The
+## raw sweep is reported alongside, so a run shows whether this engine tunnels at
+## all - under Godot Physics it does not, and the case passes without the guard
+## having anything to do.
+func _case_b01_a_fall_past_a_ledge_edge_does_not_end_inside_the_floor() -> void:
+	const START: Vector3 = Vector3(2.29999, 0.900074, 0.0)
+	const DROP: float = 0.33
+	const LOWER_TOP: float = -0.2
+
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(12.0, 1.0, 8.0), Vector3(-4.0, -0.5, 0.0))
+	_add_box(world, Vector3(10.0, 1.0, 8.0), Vector3(7.0, LOWER_TOP - 0.5, 0.0))
+	var c: StairsBody = _add_body(world, START)
+	await get_tree().physics_frame
+
+	var params: PhysicsTestMotionParameters3D = PhysicsTestMotionParameters3D.new()
+	var result: PhysicsTestMotionResult3D = PhysicsTestMotionResult3D.new()
+	params.margin = COLLIDER_MARGIN
+	params.from = Transform3D(Basis.IDENTITY, START)
+	params.motion = Vector3.DOWN * DROP
+	var raw_hit: bool = PhysicsServer3D.body_test_motion(c.get_rid(), params, result)
+	var raw_bottom: float = START.y - REST_Y + result.get_travel().y
+
+	c.global_position = START
+	c.velocity = Vector3.DOWN * (DROP / DELTA)
+	c.move_and_stair_step()
+
+	# Landing on the lower floor, or stopped short above it, is fine. Ending below
+	# it is the tunnel; ending shoved sideways is depenetration taken as a repair.
+	var bottom: float = c.global_position.y - REST_Y
+	var shove: float = absf(c.global_position.x - START.x) + absf(c.global_position.z)
+	_check(
+		"b01 a fall past a ledge edge does not end inside the floor",
+		bottom >= LOWER_TOP - 0.01 and shove < 0.05,
+		(
+			"body bottom at %.4f, floor top at %.2f, moved %.4f sideways (raw sweep: hit=%s, bottom %.4f)"
+			% [bottom, LOWER_TOP, shove, raw_hit, raw_bottom]
+		),
+	)
+	print("      raw sweep here: hit=%s, bottom ends at %.4f" % [raw_hit, raw_bottom])
+	world.queue_free()
+
+
+## At 240 Hz a 0.2 m/s walk moves 0.83 mm a frame, under the collision margin. The
+## move loop once treated any sweep that short as nothing left to do, and the body
+## stood still. min_step_forward is zeroed so the step probe does not stretch the
+## sweep past the margin and hide it.
+func _case_b02_a_slow_walk_at_a_high_tick_rate_moves() -> void:
+	const SECONDS: float = 1.0
+	var original_rate: int = Engine.physics_ticks_per_second
+	Engine.physics_ticks_per_second = HIGH_RATE
+	var world: Node3D = _slow_walk_world(false)
+	var c: StairsBody = _add_body(world, Vector3(0.4, REST_Y, 0.0))
+	c.min_step_forward = 0.0
+	await _slow_walk(c, SECONDS)
+	Engine.physics_ticks_per_second = original_rate
+
+	var moved: float = c.global_position.x - 0.4
+	_check(
+		"b02 a slow walk at a high tick rate moves",
+		absf(moved - SLOW_WALK * SECONDS) < EPS,
+		"moved %.4f m in %.1f s at %.1f m/s" % [moved, SECONDS, SLOW_WALK],
+	)
+	world.queue_free()
+
+
+## The same slow walk into a step. A frame's travel is shorter than the gap Jolt
+## leaves at a face, so without min_step_forward the move sweep never reaches the
+## face and nothing triggers a step. b04 is the control.
+func _case_b03_a_slow_walk_at_a_high_tick_rate_climbs() -> void:
+	var original_rate: int = Engine.physics_ticks_per_second
+	Engine.physics_ticks_per_second = HIGH_RATE
+	var world: Node3D = _slow_walk_world(true)
+	var c: StairsBody = _add_body(world, Vector3(0.4, REST_Y, 0.0))
+	await _slow_walk(c, 4.0)
+	Engine.physics_ticks_per_second = original_rate
+
+	_check(
+		"b03 a slow walk at a high tick rate climbs",
+		absf(c.global_position.y - (REST_Y + STEP_TOP)) < EPS,
+		"pos=%v, expected to be up on the step" % c.global_position,
+	)
+	world.queue_free()
+
+
+## Control for b03: with min_step_forward zeroed, Jolt stalls at the face, so b03
+## climbs because of min_step_forward. Godot Physics leaves a 0.15 mm gap, which a
+## slow frame still crosses, so there is nothing to control for and it is skipped.
+func _case_b04_a_zero_forward_floor_stalls_the_slow_climb_under_jolt() -> void:
+	const CASE_NAME: String = "b04 a zero forward floor stalls the slow climb under Jolt"
+	if not _is_jolt():
+		print("SKIP  %s — Jolt only" % CASE_NAME)
+		return
+	var original_rate: int = Engine.physics_ticks_per_second
+	Engine.physics_ticks_per_second = HIGH_RATE
+	var world: Node3D = _slow_walk_world(true)
+	var c: StairsBody = _add_body(world, Vector3(0.4, REST_Y, 0.0))
+	c.min_step_forward = 0.0
+	await _slow_walk(c, 4.0)
+	Engine.physics_ticks_per_second = original_rate
+
+	_check(
+		CASE_NAME,
+		absf(c.global_position.y - REST_Y) < EPS,
+		(
+			"pos=%v climbed with min_step_forward at zero, so b03 is passing for some"
+			% c.global_position
+			+ " other reason and min_step_forward is not wired"
+		),
+	)
+	world.queue_free()
+
+
+## The frame that first meets the face has only its leftover travel for the step's
+## forward leg; with min_step_forward zeroed that is under a margin, and the step
+## is refused. The refusal cache once kept that, and every later frame from the
+## same spot hit the cache instead of trying with a full frame's travel. Measured
+## stuck under Godot Physics, which stops the body 0.15 mm from the face. Jolt
+## stops it 4.2 mm off, leaves more than a margin over, and steps on first contact,
+## so there is no refusal to set up and the case is skipped.
+func _case_b05_a_step_refused_for_leftover_travel_is_not_remembered() -> void:
+	const CASE_NAME: String = "b05 a step refused for leftover travel is not remembered"
+	const WALK: float = 3.0
+	if _is_jolt():
+		print("SKIP  %s — Godot Physics only" % CASE_NAME)
+		return
+	var original_rate: int = Engine.physics_ticks_per_second
+	Engine.physics_ticks_per_second = HIGH_RATE
+	var world: Node3D = _slow_walk_world(true)
+	var c: StairsBody = _add_body(world, Vector3(0.4, REST_Y, 0.0))
+	c.min_step_forward = 0.0
+	# The premise, recorded so a green run shows it held: the frame that first meets
+	# the face does not step, and a later one does.
+	# [frame, frame of the first step up]: a lambda captures locals by value, so the
+	# handler writes through a shared array. Not packed: a Packed*Array is copied on
+	# write, so the handler's writes would never reach this one.
+	var frames: Array[int] = [0, -1] # gdlint: ignore[S6]
+	var first_contact: int = -1
+	c.stepped_up.connect(
+		func() -> void:
+			if frames[1] < 0:
+				frames[1] = frames[0],
+	)
+	var delta: float = 1.0 / float(HIGH_RATE)
+	for _i: int in HIGH_RATE / 4:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * delta
+		c.move_and_stair_step()
+	for i: int in HIGH_RATE / 2:
+		await get_tree().physics_frame
+		frames[0] = i
+		c.velocity.x = WALK
+		c.velocity.y -= GRAVITY * delta
+		c.desired_velocity = Vector3(WALK, 0.0, 0.0)
+		c.move_and_stair_step()
+		if first_contact < 0 and (c.is_on_wall() or frames[1] >= 0):
+			first_contact = i
+	Engine.physics_ticks_per_second = original_rate
+	var stepped_at: int = frames[1]
+
+	var refused_first: bool = first_contact >= 0 and stepped_at > first_contact
+	_check(
+		CASE_NAME,
+		refused_first and c.global_position.y > REST_Y + STEP_TOP - EPS,
+		(
+			"pos=%v, first contact on frame %d, stepped on frame %d - expected a refusal at"
+			% [c.global_position, first_contact, stepped_at]
+			+ " first contact and the body up on the step after it"
+		),
+	)
+	world.queue_free()
+
+
+## Smoothing turns idle processing on at NOTIFICATION_READY and never off, so a
+## subclass's own _process keeps running with a smooth_node assigned or not.
+func _case_b06_smoothing_setup_does_not_kill_a_subclass_process() -> void:
+	var world: Node3D = _slow_walk_world(false)
+	var c: ProcessingBody = ProcessingBody.new()
+	var pivot: Node3D = Node3D.new()
+	c.add_child(pivot)
+	c.smooth_node = pivot
+	_add_body(world, Vector3(0.0, REST_Y, 0.0), c)
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+	_check(
+		"b06 smoothing setup does not kill a subclass _process",
+		c.is_processing() and c.custom_process_frames > 0,
+		("is_processing=%s custom_process_frames=%d" % [c.is_processing(), c.custom_process_frames]),
+	)
+	world.queue_free()
+
+
+## A freed body's RID stays non-zero, and the physics server reads a freed RID as
+## a static body, so a floor kept by RID alone was never let go: every frame after
+## the platform died asked the server about it again. Measured by the engine errors
+## those calls raise.
+func _case_b07_a_freed_floor_is_let_go() -> void:
+	const PLATFORM_SPEED: float = 5.0
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(40.0, 1.0, 8.0), Vector3(0.0, -3.5, 0.0))
+	var platform: AnimatableBody3D = AnimatableBody3D.new()
+	var platform_shape: CollisionShape3D = CollisionShape3D.new()
+	var platform_box: BoxShape3D = BoxShape3D.new()
+	platform_box.size = Vector3(40.0, 1.0, 8.0)
+	platform_shape.shape = platform_box
+	platform.add_child(platform_shape)
+	world.add_child(platform)
+	platform.global_position = Vector3(0.0, -0.5, 0.0)
+	var c: StairsBody = _add_body(world, Vector3(0.0, REST_Y, 0.0))
+	for _i: int in 30:
+		await get_tree().physics_frame
+		platform.global_position.x += PLATFORM_SPEED * DELTA
+		c.velocity.y -= GRAVITY * DELTA
+		c.move_and_stair_step()
+	var rode: bool = c.is_on_floor() and c.get_platform_velocity().length() > 1.0
+
+	var counter: ErrorCounter = ErrorCounter.new()
+	OS.add_logger(counter)
+	platform.free()
+	for _i: int in 30:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * DELTA
+		c.move_and_stair_step()
+	OS.remove_logger(counter)
+
+	_check(
+		"b07 a freed floor is let go",
+		rode and counter.errors == 0,
+		"rode=%s, %d engine errors after the floor was freed" % [rode, counter.errors],
+	)
+	world.queue_free()
+
+
+## At a slow walk the step probe is stretched to min_step_forward, and when intent
+## is the longer vector it is stretched along intent. Its sweep then runs off the
+## frame's motion, and taking its travel as the body's once moved the body along
+## intent - here into a wall it was walking beside, rather than along it.
+func _case_b08_intent_off_the_motion_does_not_steer_the_body() -> void:
+	const ALONG: float = 0.3
+	const WALL_GAP: float = 0.01
+	const SECONDS: float = 0.5
+	var original_rate: int = Engine.physics_ticks_per_second
+	Engine.physics_ticks_per_second = HIGH_RATE
+	var delta: float = 1.0 / float(HIGH_RATE)
+	var world: Node3D = _slow_walk_world(false)
+	# A wall too tall to step, its face WALL_GAP past the body's side.
+	_add_box(world, Vector3(1.0, 4.0, 8.0), Vector3(BODY_RADIUS + WALL_GAP + 0.5, 2.0, 0.0))
+	var c: StairsBody = _add_body(world, Vector3(0.0, REST_Y, 0.0))
+	for _i: int in HIGH_RATE / 4:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * delta
+		c.move_and_stair_step()
+	var start: Vector3 = c.global_position
+	for _i: int in int(SECONDS * float(HIGH_RATE)):
+		await get_tree().physics_frame
+		c.velocity = Vector3(0.0, c.velocity.y - GRAVITY * delta, ALONG)
+		c.desired_velocity = Vector3(3.0, 0.0, 0.0)
+		c.move_and_stair_step()
+	Engine.physics_ticks_per_second = original_rate
+
+	var moved: Vector3 = c.global_position - start
+	_check(
+		"b08 intent off the motion does not steer the body",
+		absf(moved.x) < 0.001 and absf(moved.z - ALONG * SECONDS) < EPS,
+		"moved %v, expected %.3f along z and nothing along x" % [moved, ALONG * SECONDS],
+	)
+	world.queue_free()
+
+
+## Held still against a wall it cannot step - velocity zero, intent into the wall -
+## the body is on that wall. The frame has no motion, so the only sweep is the
+## step probe along intent, and that sweep has to report the wall.
+func _case_b09_held_against_a_wall_is_on_the_wall() -> void:
+	var world: Node3D = _slow_walk_world(false)
+	_add_box(world, Vector3(1.0, 4.0, 8.0), Vector3(BODY_RADIUS + 0.5, 2.0, 0.0))
+	var c: StairsBody = _add_body(world, Vector3(0.0, REST_Y, 0.0))
+	for _i: int in 15:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * DELTA
+		c.move_and_stair_step()
+	for _i: int in 30:
+		await get_tree().physics_frame
+		c.velocity = Vector3(0.0, c.velocity.y - GRAVITY * DELTA, 0.0)
+		c.desired_velocity = Vector3(3.0, 0.0, 0.0)
+		c.move_and_stair_step()
+
+	_check(
+		"b09 held against a wall is on the wall",
+		c.is_on_wall() and c.get_wall_normal().dot(Vector3.LEFT) > 0.9,
+		"is_on_wall=%s wall_normal=%v" % [c.is_on_wall(), c.get_wall_normal()],
+	)
+	world.queue_free()
+
+
+## A subclass with its own _ready and _process, the shape a game's player script
+## takes. Counts its own process frames.
+class ProcessingBody:
+	extends StairsBody
+
+	var custom_process_frames: int = 0
+
+
+	func _ready() -> void:
+		pass
+
+
+	func _process(_delta: float) -> void:
+		custom_process_frames += 1
+
+
+## Counts engine errors, so a case can say none were raised. Warnings reach the
+## same callback and are not counted. Unlocked: the physics that raises them runs
+## on the main thread in this project.
+class ErrorCounter:
+	extends Logger
+
+	var errors: int = 0
+
+
+	func _log_error(
+		_function: String,
+		_file: String,
+		_line: int,
+		_code: String,
+		_rationale: String,
+		_editor_notify: bool,
+		error_type: int,
+		_script_backtraces: Array[ScriptBacktrace],
+	) -> void:
+		if error_type == ERROR_TYPE_ERROR:
+			errors += 1
