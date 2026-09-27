@@ -49,6 +49,7 @@ func _run_all() -> void:
 	await _case_b17_a_pole_clipped_in_passing_is_listed()
 	await _case_b18_a_floor_on_an_ignored_layer_is_never_ridden()
 	await _case_b19_a_step_up_is_never_followed_by_a_false_step_down()
+	await _case_b20_a_step_onto_a_rounded_nosing_never_launches_the_body()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -838,6 +839,57 @@ func _case_b19_a_step_up_is_never_followed_by_a_false_step_down() -> void:
 		false_drops == 0 and absf(c.global_position.y - top_y) < EPS,
 		"%d step downs on ticks the body rose, y=%.4f expected ~%.3f (the top tread)"
 		% [false_drops, c.global_position.y, top_y],
+	)
+	world.queue_free()
+
+
+## a game's flight: each tread is one box from its nosing to the end of the run.
+## A step can land with only 20 mm of rim over a nosing, sitting 5 mm down Jolt's
+## rounded edge. A landing that recorded a level floor there sent the next move
+## into the curve, whose 28 degree normal the slide turned the velocity along: a
+## 1.6 m/s launch, 42 of 170 ticks in the air in a game.
+func _case_b20_a_step_onto_a_rounded_nosing_never_launches_the_body() -> void:
+	const RISE: float = 0.25
+	const GOING: float = 0.5
+	const TREADS: int = 8
+	const SPEED: float = 3.83
+	const RUN_END: float = 20.0
+	const TICKS: int = 90
+	# m/s. The launch measured 1.55; walking up the flight never rises at all.
+	const MAX_UP_SPEED: float = 0.1
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(40.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	for k: int in TREADS:
+		var top: float = RISE * float(k + 1)
+		var nosing: float = 2.0 + GOING * float(k)
+		_add_box(
+			world,
+			Vector3(RUN_END - nosing, top, 8.0),
+			Vector3((nosing + RUN_END) * 0.5, top * 0.5, 0.0),
+		)
+	var c: StairsBody = _add_player_body(world, Vector3.ZERO)
+	for _i: int in 15:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * DELTA
+		c.move_and_stair_step()
+	var airborne: int = 0
+	var peak_up_speed: float = 0.0
+	for _i: int in TICKS:
+		await get_tree().physics_frame
+		c.velocity.x = SPEED
+		c.velocity.y -= GRAVITY * DELTA
+		c.desired_velocity = Vector3(SPEED, 0.0, 0.0)
+		c.move_and_stair_step()
+		peak_up_speed = maxf(peak_up_speed, c.velocity.y)
+		if not c.is_on_floor():
+			airborne += 1
+	var top_y: float = RISE * float(TREADS)
+
+	_check(
+		"b20 a step onto a rounded nosing never launches the body",
+		airborne == 0 and peak_up_speed < MAX_UP_SPEED and absf(c.global_position.y - top_y) < EPS,
+		"%d of %d ticks airborne, peak upward speed %.2f m/s, y=%.4f expected 0, ~0, ~%.3f"
+		% [airborne, TICKS, peak_up_speed, c.global_position.y, top_y],
 	)
 	world.queue_free()
 

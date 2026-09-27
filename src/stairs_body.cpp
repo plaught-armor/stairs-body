@@ -86,7 +86,19 @@ void StairsBody::move_and_stair_step() {
 	}
 
 	if (was_on_floor && !_on_floor && velocity.y <= 0.0) {
-		_probe_floor();
+		// Announced as no more than the move's net descent. Jolt rounds a box's edges
+		// by its margin, and a flat bottom that steps up with only its rim over the
+		// nosing sits on the curve and reads its tilted normal. The next move follows
+		// that normal as a slope, rises past the few millimetres of curve, and the
+		// probe sets it back down: measured, a 0.27 m cylinder running up 0.25 m
+		// treads rose 30 mm and was probed down 25 mm in one move. That move went up,
+		// and is no step down.
+		const double probe_drop = -_probe_floor();
+		const double drop = MIN(probe_drop, start.origin.y - get_global_position().y);
+		if (drop >= STEP_DOWN_SIGNAL_MIN) {
+			emit_signal("stepped_down", drop);
+			emit_signal("stepped", -drop);
+		}
 	}
 
 	if (was_on_floor && !_on_floor) {
@@ -547,14 +559,7 @@ bool StairsBody::_step_sweeps(const Transform3D &p_at, const Vector3 &p_remainde
 		return false;
 	}
 
-	// Jolt rounds a box's edges by its margin, so a flat bottom set down with only
-	// its rim over the tread rests on the curve and reads a tilted normal. Followed
-	// as a slope on the next move, that normal lifted the body off the tread and the
-	// floor probe dropped it back: a 0.27 m cylinder running up 0.25 m treads read
-	// (-0.19, 0.98) with 17 mm of rim over the nosing, then rose 12 mm and emitted a
-	// 12 mm step down on a tick it went up. A flat bottom that lands walkable on a
-	// step is on a tread, and a tread is level.
-	_record_floor(normal == WORLD_UP || !_flat_bottomed() ? normal : WORLD_UP);
+	_record_floor(normal);
 	_step_to = landed;
 	_step_rise = landed.origin.y - p_at.origin.y;
 	return true;
@@ -594,9 +599,10 @@ void StairsBody::_remember_refusal(const Vector3 &p_origin, const Vector3 &p_nor
 }
 
 // One sweep down: keeps a walker on the floor, steps it down, and finds ledges.
-// Masked the same way and for the same reason as _try_step. The step-down is
-// announced after the mask is back, so a handler sees the body's own mask.
-void StairsBody::_probe_floor() {
+// Masked the same way and for the same reason as _try_step. Returns the height
+// change when it stepped the body down, a negative number, and 0.0 when it did
+// not; the caller announces it once the mask is back.
+double StairsBody::_probe_floor() {
 	double drop = 0.0;
 	if (step_ignore_layers == 0) {
 		drop = _probe_sweep();
@@ -606,10 +612,7 @@ void StairsBody::_probe_floor() {
 		drop = _probe_sweep();
 		set_collision_mask(was_mask);
 	}
-	if (drop < 0.0) {
-		emit_signal("stepped_down", -drop);
-		emit_signal("stepped", drop);
-	}
+	return drop;
 }
 
 // Returns the height change when it stepped the body down, a negative number, and

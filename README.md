@@ -273,10 +273,11 @@ parks it flush.
 | `stepped(delta)` | Either of the above, right after the specific one. |
 
 The heights are in metres and are how far the body actually moved, not how far it
-was allowed to reach. `rise` and `drop` are positive; `delta` is signed, positive
-up. A move emits at most one step, so a move that steps emits `stepped` and exactly
-one of the other two. Keeping contact with the floor while walking down a slope is
-not a step and emits nothing.
+was allowed to reach. `drop` is never more than the whole move's descent: a move
+that ends higher than it started is no step down. `rise` and `drop` are positive;
+`delta` is signed, positive up. A move emits at most one step, so a move that
+steps emits `stepped` and exactly one of the other two. Keeping contact with the
+floor while walking down a slope is not a step and emits nothing.
 
 All three fire inside `move_and_stair_step()`, after the move is final, so a
 handler must not call back into it. Build your own [step smoothing](#step-smoothing)
@@ -329,7 +330,7 @@ Runs two headless suites and exits with the total number of failures:
 
 - `test/test_stairs.gd`, 43 checks. They began as `StairsCharacter`'s suite and
   kept its case numbers, so the gaps are cases that tested that class's own API.
-- `test/test_stairs_body.gd`, 20 checks for machinery the first suite does not
+- `test/test_stairs_body.gd`, 21 checks for machinery the first suite does not
   reach: the tunnel guard, the refusal cache, the loose-step rule, the Jolt edge
   handling and the contact list.
 

@@ -143,7 +143,7 @@ private:
 	Transform3D _step_forward(Transform3D p_from, const Vector3 &p_forward);
 	bool _refused_here(const Vector3 &p_origin, const Vector3 &p_normal, const RID &p_rid) const;
 	void _remember_refusal(const Vector3 &p_origin, const Vector3 &p_normal, const RID &p_rid);
-	void _probe_floor();
+	double _probe_floor();
 	double _probe_sweep();
 	bool _probe_off_corner(const Vector3 &p_normal, double p_drop);
 	bool _flat_bottomed();

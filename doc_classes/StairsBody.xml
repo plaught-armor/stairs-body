@@ -151,7 +151,7 @@
 		<signal name="stepped_down">
 			<param index="0" name="drop" type="float" />
 			<description>
-				Emitted when the floor probe has set the body down onto a lower surface. [param drop] is how far it went down, in metres, and is positive.
+				Emitted when the floor probe has set the body down onto a lower surface. [param drop] is how far it went down, in metres, and is positive. It is never more than the whole move's descent, so a move that ends higher than it started emits none.
 			</description>
 		</signal>
 		<signal name="stepped_up">
