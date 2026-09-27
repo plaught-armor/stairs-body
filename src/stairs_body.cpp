@@ -38,6 +38,21 @@ bool StairsBody::_test_motion(const Ref<PhysicsTestMotionParameters3D> &p_params
 	return physics()->body_test_motion(get_rid(), p_params, _result);
 }
 
+// One sweep with step_ignore_layers out of the mask. Besides not meeting those
+// bodies, it skips depenetrating from them, which is most of what a sweep costs in
+// a crowd pressed together: in a pile of 96 bodies, 10.3 us against 2.2 on Jolt for
+// the zero-motion test, where the neighbours are all the body overlaps.
+bool StairsBody::_test_motion_masked(const Ref<PhysicsTestMotionParameters3D> &p_params) {
+	if (step_ignore_layers == 0) {
+		return _test_motion(p_params);
+	}
+	const uint32_t was_mask = get_collision_mask();
+	set_collision_mask(was_mask & ~step_ignore_layers);
+	const bool hit = _test_motion(p_params);
+	set_collision_mask(was_mask);
+	return hit;
+}
+
 // Appends contact `index` of the last sweep to the contact list. The list holds
 // what the body touched on the path it took: slide sweeps, the sweeps of a step it
 // committed, the carry, the floor probe that set it down, and the resting contacts
@@ -261,11 +276,14 @@ void StairsBody::_slide(Vector3 p_motion, bool p_may_step, double p_delta, bool 
 // A step from wherever a probe along intent meets a steep face, at most `reach`
 // along it. With no motion this frame, intent is the only direction there is, and
 // a face it meets is the wall the body is being held against; otherwise the face
-// may be off to the side, and only the slide's own sweep records a wall.
+// may be off to the side, and only the slide's own sweep records a wall. Masked
+// like the step sweeps: a body on step_ignore_layers is never the step, and a step
+// behind one is found through it, so a body held still against one of those does
+// not list it.
 bool StairsBody::_intent_step(const Transform3D &p_from, const Vector3 &p_probe, double p_reach) {
 	_params->set_from(p_from);
 	_params->set_motion(p_probe);
-	if (!_test_motion(_params)) {
+	if (!_test_motion_masked(_params)) {
 		return false;
 	}
 	const Vector3 normal = _result->get_collision_normal(0);
@@ -351,7 +369,33 @@ void StairsBody::_record_floor(const Vector3 &p_normal, int p_index) {
 // is not applied: that deep, depenetration picks whichever way out is shortest -
 // 1.47 m down through the floor on Godot Physics, 0.5 m sideways on Jolt. The move
 // is redone instead, with every sweep checked.
+//
+// Run first with step_ignore_layers out of the mask, which in a crowd pressed
+// together skips depenetrating from every neighbour: see _test_motion_masked. A
+// body standing on one of those finds no floor that way, and only then is the test
+// run again with the whole mask. Masked, a body resting against a neighbour does not
+// list it; the slide lists the neighbours it moves into. Nor does sinking into one
+// redo the move: the guard is for the static geometry Jolt's filter lets a sweep
+// pass through, and a body overlapping a neighbour is pushed out by the recovery
+// of its next unmasked sweep, which in a crowd pressed together is every move.
 bool StairsBody::_settle() {
+	if (step_ignore_layers == 0) {
+		return _settle_test();
+	}
+	const uint32_t mark = _contacts.size();
+	const uint32_t was_mask = get_collision_mask();
+	set_collision_mask(was_mask & ~step_ignore_layers);
+	const bool embedded = _settle_test();
+	set_collision_mask(was_mask);
+	if (embedded || _on_floor) {
+		return embedded;
+	}
+	_contacts.resize(mark);
+	return _settle_test();
+}
+
+// The zero-motion test itself, with whatever mask the body has now.
+bool StairsBody::_settle_test() {
 	_contact_params->set_margin(safe_margin);
 	_contact_params->set_from(get_global_transform());
 	if (!_test_motion(_contact_params)) {

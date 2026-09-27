@@ -12,7 +12,7 @@ It does not track upstream and does not send changes back. The four-phase steppi
 algorithm (up, forward, down, commit) is Andrea Jörgensen's, and `StairsBody`
 still follows it.
 
-The test suites run headless under **both** Godot Physics and Jolt, 58 cases,
+The test suites run headless under **both** Godot Physics and Jolt, 65 checks,
 green on each.
 
 ## Why a move loop of its own
@@ -45,6 +45,7 @@ not have helped much. The only way to get cheaper was to run fewer queries.
 | Climbing a step | 5 (move, up, forward, down, contact test) |
 | Leaving a floor | +1 (the floor probe, only where contact is lost) |
 | On a moving platform | +1 (the carry, as its own sweep) |
+| Standing on a body on `step_ignore_layers` | +1 (the contact test again, with the whole mask) |
 
 **Then C++, because it is meant for crowds.** With the slide in the class, the
 class's own code became a real share of the frame: 16-34% under Tracy. The target
@@ -60,11 +61,16 @@ per frame:
 | Godot Physics, flat ground | 31.6 | 14.0 |
 | Godot Physics, pressed into a wall | 66.6 | 38.1 |
 | Jolt, flat ground | 16.5 | 6.8 |
-| Jolt, pressed into a wall | 42.0 | 19.6 |
+| Jolt, pressed into a wall | 42.0 | 19.2 |
 
-Most of what is left is the engine's own sweeps. Both GDScript classes, and the
-benchmarks and diagnostics written for `StairsCharacter`, are kept at the git tag
-`gdscript-final`.
+Most of what is left is the engine's own sweeps. In a crowd pressed together,
+every sweep also pays to push out of the neighbours the body overlaps; put the
+crowd's own layer in `step_ignore_layers` and the checks that only look for steps
+and floor skip that. `test/bench_pile.gd`, 96 box-shaped bodies pressed into a pile
+under Jolt, runs at about 34 µs per body.
+
+Both GDScript classes, and the benchmarks and diagnostics written for
+`StairsCharacter`, are kept at the git tag `gdscript-final`.
 
 ## Install
 
@@ -111,8 +117,9 @@ func _physics_process(delta: float) -> void:
 can: `velocity`, `is_on_floor()`, `is_on_wall()`, `is_on_ceiling()`,
 `get_floor_normal()`, `get_wall_normal()` and `get_platform_velocity()`. There is
 no `move_and_slide()` and no `up_direction`: world up is +Y. In place of the
-slide-collision list there is a [contact list](#contacts). There is also no `floor_snap_length`, because the floor probe does that job,
-reaching `step_down_height`.
+slide-collision list there is a [contact list](#contacts). There is also no
+`floor_snap_length`, because the floor probe does that job, reaching
+`step_down_height`.
 
 Those getters and the contact list describe where the last `move_and_stair_step()`
 left the body, and only a move updates them. After moving the body any other way
@@ -124,10 +131,10 @@ step up from a standstill while pressed against a step face, where velocity has
 been clipped to zero, and climb a step that intent points at but this frame's
 motion does not.
 
-Use a `CylinderShape3D` with its margin around `0.001`. Every test case uses that
-shape. A rounded bottom meets a tread's corner before its face, and the floor
-probe reads such a contact as support on the way down, but the suites do not pin
-climbing with one.
+Use a `CylinderShape3D` with its margin around `0.001`. Nearly every test case uses
+that shape. A rounded bottom meets a tread's corner before its face, and the floor
+probe reads such a contact as support on the way down; the suites pin a capsule
+walking down, but not climbing.
 
 ## Properties
 
@@ -140,7 +147,7 @@ climbing with one.
 | `floor_max_angle` | 45° | Steepest surface that counts as floor. |
 | `max_slides` | `4` | Slides for the main move. On the floor, a wall met within 15° of head-on stops the slide, as `CharacterBody3D`'s default `wall_min_slide_angle` does. |
 | `safe_margin` | `0.001` | Collision margin for every sweep. |
-| `step_ignore_layers` | none | Layers a step is never placed onto, though the body still collides with them: bodies too small or too self-driving to be a stair. A floor on them holds the body up but never carries it as a platform. |
+| `step_ignore_layers` | none | Layers a step is never placed onto, though the body still collides with them: bodies too small or too self-driving to be a stair. A floor on them holds the body up but never carries it as a platform. A crowd's own layer belongs here, which also makes it much cheaper: see [Contacts](#contacts). |
 | `velocity` | zero | Velocity in m/s. After each move it is clipped against what the body hit, and its downward part is zeroed on the floor. |
 | `desired_velocity` | zero | Horizontal intent for this frame. Cleared after each move. |
 | `force_stair_step` | `false` | Allow a step this frame while airborne, such as a ledge catch. Cleared after each move. |
@@ -294,10 +301,12 @@ lookup for code that only compares ids.
 The list holds contacts on the path the body took: each slide sweep, the sweeps of
 a step it committed, a moving floor's carry, and the floor probe when it set the
 body down. It also holds the resting contacts of the check after the move, floor
-included, so a body leaning on something without moving still lists it. A step the
-body tried and refused lists none of its sweeps. The list is cleared at the start
-of every move. A collider can appear more than once, and the order carries no
-meaning.
+included, so a body leaning on something without moving still lists it. That check
+skips bodies on `step_ignore_layers` unless the body is standing on one: in a crowd
+pressed together, pushing out of every neighbour is most of what it costs, and the
+slide already lists the neighbours the body moves into. A step the body tried and
+refused lists none of its sweeps. The list is cleared at the start of every move.
+A collider can appear more than once, and the order carries no meaning.
 
 ## Physics engines
 
@@ -312,7 +321,10 @@ above. Two Jolt behaviours needed handling, and a test pins each:
   every sweep verified by a shape cast.
 - **Rounded edges.** Jolt rounds box edges by their margin. A flat-bottomed body
   walking down treads meets that curve with a steep normal, and it went airborne
-  until the floor probe learned to shift off the curve and probe again.
+  until the floor probe learned to shift off the curve and probe again. Climbing,
+  a step can land with only the rim over the nosing; the next move follows the
+  curve up and the probe sets it back down, which is why `stepped_down` never
+  reports more than the move's net descent.
 
 To run under Jolt, drop an `override.cfg` beside `project.godot`:
 
@@ -330,17 +342,17 @@ Runs two headless suites and exits with the total number of failures:
 
 - `test/test_stairs.gd`, 43 checks. They began as `StairsCharacter`'s suite and
   kept its case numbers, so the gaps are cases that tested that class's own API.
-- `test/test_stairs_body.gd`, 21 checks for machinery the first suite does not
+- `test/test_stairs_body.gd`, 22 checks for machinery the first suite does not
   reach: the tunnel guard, the refusal cache, the loose-step rule, the Jolt edge
-  handling and the contact list.
+  handling, `step_ignore_layers` and the contact list.
 
 Each builds its worlds procedurally. Build the extension with `scons` first;
 `run.sh` stops if the library is missing. Point `GODOT` at a binary if the defaults
 in `run.sh` do not exist on your machine: `GODOT=/path/to/godot test/run.sh`.
 
 Nothing in `test/` ships with the addon. `bench_frame.gd` measures the per-frame
-cost above, and `bench_primitive.gd` measures what each physics query costs by
-itself.
+cost above, `bench_pile.gd` measures a crowd pressed together, and
+`bench_primitive.gd` measures what each physics query costs by itself.
 
 ## Credits
 

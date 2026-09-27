@@ -61,8 +61,10 @@ private:
 	// contact with the floor it was already on.
 	static constexpr double STEP_DOWN_SIGNAL_MIN = 0.01;
 	// Contacts the floor-contact check reads. A wall and a floor at once is the case
-	// that needs more than one; four covers a corner.
-	static constexpr int CONTACT_MAX = 4;
+	// that needs more than one, but a body pressed into a crowd touches several
+	// neighbours too, and at four they crowded the floor out of the list: in a pile
+	// of 96 box-shaped bodies the floor probe then ran on 91% of moves, against 28%.
+	static constexpr int CONTACT_MAX = 16;
 	// Depenetration past this many margins means the body is inside something rather
 	// than resting on it, and _settle pushes it back out. A resting contact recovers
 	// under one margin on both engines (measured 0.75 on Jolt, 0.81 on Godot Physics).
@@ -134,6 +136,7 @@ private:
 	Kind _classify(const Vector3 &p_normal);
 	void _record_floor(const Vector3 &p_normal, int p_index = 0);
 	bool _settle();
+	bool _settle_test();
 	double _unblocked_fraction(const Transform3D &p_from, const Vector3 &p_motion);
 	static Vector3 _clip(const Vector3 &p_remainder, const Vector3 &p_normal, const Vector3 &p_previous_normal);
 	static Vector3 _clip_length(const Vector3 &p_v, double p_max_length);
@@ -148,6 +151,7 @@ private:
 	bool _probe_off_corner(const Vector3 &p_normal, double p_drop);
 	bool _flat_bottomed();
 	bool _test_motion(const Ref<PhysicsTestMotionParameters3D> &p_params);
+	bool _test_motion_masked(const Ref<PhysicsTestMotionParameters3D> &p_params);
 	void _record_contact(int p_index = 0);
 
 protected:

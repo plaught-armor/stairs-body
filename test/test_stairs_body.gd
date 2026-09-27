@@ -50,6 +50,7 @@ func _run_all() -> void:
 	await _case_b18_a_floor_on_an_ignored_layer_is_never_ridden()
 	await _case_b19_a_step_up_is_never_followed_by_a_false_step_down()
 	await _case_b20_a_step_onto_a_rounded_nosing_never_launches_the_body()
+	await _case_b21_standing_on_an_ignored_body_stays_on_the_floor()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -890,6 +891,51 @@ func _case_b20_a_step_onto_a_rounded_nosing_never_launches_the_body() -> void:
 		airborne == 0 and peak_up_speed < MAX_UP_SPEED and absf(c.global_position.y - top_y) < EPS,
 		"%d of %d ticks airborne, peak upward speed %.2f m/s, y=%.4f expected 0, ~0, ~%.3f"
 		% [airborne, TICKS, peak_up_speed, c.global_position.y, top_y],
+	)
+	world.queue_free()
+
+
+## The check after the move runs with step_ignore_layers masked out, which in a
+## crowd skips depenetrating from every neighbour. A body standing on one of those
+## bodies finds no floor that way, and the floor probe, masked the same, cannot
+## reach past a slab taller than step_height: without the unmasked retry the body
+## read airborne on every other tick, still or walking.
+func _case_b21_standing_on_an_ignored_body_stays_on_the_floor() -> void:
+	const IGNORED_LAYER: int = 2
+	const SLAB_TOP: float = 0.5
+	const SETTLE: int = 20
+	const TICKS: int = 80
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(20.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	var slab: StaticBody3D = _add_box(
+		world,
+		Vector3(4.0, SLAB_TOP, 4.0),
+		Vector3(0.0, SLAB_TOP * 0.5, 0.0),
+	)
+	slab.collision_layer = IGNORED_LAYER
+	var c: StairsBody = StairsBody.new()
+	c.collision_mask = 1 | IGNORED_LAYER
+	c.step_ignore_layers = IGNORED_LAYER
+	_add_body(world, Vector3(0.0, SLAB_TOP + REST_Y, 0.0), c)
+	for _i: int in SETTLE:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * DELTA
+		c.move_and_stair_step()
+	var airborne: int = 0
+	for i: int in TICKS:
+		await get_tree().physics_frame
+		var walk: float = SLOW_WALK if i >= TICKS / 2 else 0.0
+		c.velocity = Vector3(walk, c.velocity.y - GRAVITY * DELTA, 0.0)
+		c.desired_velocity = Vector3(walk, 0.0, 0.0)
+		c.move_and_stair_step()
+		if not c.is_on_floor():
+			airborne += 1
+
+	_check(
+		"b21 standing on an ignored body stays on the floor",
+		airborne == 0 and absf(c.global_position.y - SLAB_TOP - REST_Y) < EPS,
+		"%d of %d ticks off the floor, y=%.4f expected 0, ~%.2f"
+		% [airborne, TICKS, c.global_position.y, SLAB_TOP + REST_Y],
 	)
 	world.queue_free()
 

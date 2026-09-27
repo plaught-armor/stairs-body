@@ -38,7 +38,7 @@
 		<method name="get_contact_count" qualifiers="const">
 			<return type="int" />
 			<description>
-				Number of contacts the last [method move_and_stair_step] made. Listed: each slide sweep's contact, the sweeps of a step the body committed, a moving floor's carry, the floor probe when it set the body down, and the resting contacts after the move, floor included. Not listed: the sweeps of a step that was refused. Cleared at the start of every move. A collider may appear more than once; the order carries no meaning.
+				Number of contacts the last [method move_and_stair_step] made. Listed: each slide sweep's contact, the sweeps of a step the body committed, a moving floor's carry, the floor probe when it set the body down, and the resting contacts after the move, floor included. Not listed: the sweeps of a step that was refused, and resting contacts with bodies on [member step_ignore_layers] unless the body is standing on one. Cleared at the start of every move. A collider may appear more than once; the order carries no meaning.
 			</description>
 		</method>
 		<method name="get_contact_normal" qualifiers="const">
