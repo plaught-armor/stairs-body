@@ -114,6 +114,11 @@ no `move_and_slide()` and no `up_direction`: world up is +Y. In place of the
 slide-collision list there is a [contact list](#contacts). There is also no `floor_snap_length`, because the floor probe does that job,
 reaching `step_down_height`.
 
+Those getters and the contact list describe where the last `move_and_stair_step()`
+left the body, and only a move updates them. After moving the body any other way
+(setting `global_position`, reparenting it, carrying it without moves), call
+`move_and_stair_step()` before reading them, or they still report the old spot.
+
 `desired_velocity` is where the controller wants to go this frame. It lets the body
 step up from a standstill while pressed against a step face, where velocity has
 been clipped to zero, and climb a step that intent points at but this frame's
