@@ -349,9 +349,10 @@ position-based crowds). Each member's footprint is a capsule lying flat, measure
 once from its shapes' bounds, and is kept apart in two ways:
 
 - Once per physics frame, before the first member moves, every pair that overlaps
-  is pushed apart, each taking half. A member takes its push as part of its own
-  next move, so the push is swept against the world with the move and never
-  shoves the member into a wall. A member not moved that frame never takes it.
+  by more than the slop (below) is pushed back to it, each taking half. A member
+  takes its push as part of its own next move, so the push is swept against the
+  world with the move and never shoves the member into a wall. A member not moved
+  that frame never takes it.
 - Each move's own motion is kept out of the neighbours, so a member walking into
   one stops at it, as a sweep would stop it.
 
@@ -367,8 +368,11 @@ floor. The same bodies standing apart and still cost what they cost without it.
 What changes:
 
 - Members never stand on each other. A pile stays one deep.
+- Footprints may overlap by up to 5 mm, the slop, and separation leaves that alone,
+  as Box2D's contact solver does. Pushed back to touching, a still pile was nudged
+  every frame and its members almost never rested; with the slop, they can.
 - The footprint is a capsule. A box's corners stick out of it, so box-shaped
-  members can overlap corner to corner, by up to about 40% of their width: 6-9 mm
+  members can overlap corner to corner, by up to about 40% of their width: 8-12 mm
   on average and about 25 mm at worst in that pile of 60 mm wide bodies.
 - Only members see each other this way. Anything else on the layer, and any body
   that keeps the layer in its mask (a player walking through the crowd), collides

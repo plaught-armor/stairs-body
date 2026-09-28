@@ -88,6 +88,11 @@ private:
 	static constexpr double CROWD_LOOKAHEAD = 0.05;
 	// Projection passes against the gathered neighbours.
 	static constexpr int CROWD_PASSES = 4;
+	// Overlap between crowd footprints that separation leaves alone, in metres; deeper
+	// overlap is pushed back to it, not to touching. Box2D's b2_linearSlop, 5 mm, for
+	// the same reason: resolved to touching, a still pile was nudged every frame and
+	// its bodies almost never rested (4-7% of still samples in a game's 96-body pile).
+	static constexpr double CROWD_SLOP = 0.005;
 
 	// One contact the last move met; see _record_contact for which ones count.
 	struct Contact {
@@ -155,6 +160,9 @@ private:
 		double floor_y = 0.0;
 		double bottom = 0.0;
 		double top = 0.0;
+		// The gap this move may not go below: where the neighbour was met, clamped
+		// to between the slop and touching. See _crowd_solve.
+		double least_gap = 0.0;
 	};
 	LocalVector<Neighbour> _neighbours;
 	// This body's own footprint in world space, as of the start of the move.

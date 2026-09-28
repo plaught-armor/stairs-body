@@ -63,6 +63,7 @@ func _run_all() -> void:
 	await _case_b27_a_resting_body_wakes_only_for_a_walker_that_can_enter_it()
 	await _case_b28_a_body_set_into_the_floor_comes_out_before_resting()
 	await _case_b29_a_resting_body_is_checked_again_when_its_collider_changes()
+	await _case_b30_crowd_overlap_under_the_slop_is_left_alone()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -1286,6 +1287,50 @@ func _case_b29_a_resting_body_is_checked_again_when_its_collider_changes() -> vo
 		),
 		"grown y=%.4f expected %.4f, lowered y=%.4f expected %.4f, fell when switched off %s"
 		% [grown_y, REST_Y + GROW * 0.5, lowered_y, REST_Y + GROW * 0.5 + LOWER, fell],
+	)
+	world.queue_free()
+
+
+## Crowd separation leaves an overlap under its slop alone, as Box2D's contact solver
+## does, so still bodies in a pile stop being nudged and can rest. Deeper overlap is
+## pushed back to the slop, not to touching. Two still pairs: one set 3 mm into each
+## other stays exactly where it was put, one set 30 mm in ends 5 mm in.
+func _case_b30_crowd_overlap_under_the_slop_is_left_alone() -> void:
+	# CROWD_SLOP in src/stairs_body.h; retune both together.
+	const SLOP: float = 0.005
+	const SHALLOW: float = 0.003
+	const DEEP: float = 0.03
+	const TICKS: int = 30
+	const HELD: float = 0.0001
+	const CONVERGED: float = 0.001
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(20.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	var bodies: Array[StairsBody] = []
+	for spec: Vector2 in [Vector2(-3.0, SHALLOW), Vector2(3.0, DEEP)]:
+		var left_x: float = spec.x - BODY_RADIUS + spec.y * 0.5
+		var right_x: float = spec.x + BODY_RADIUS - spec.y * 0.5
+		bodies.append(_add_crowd_body(world, Vector3(left_x, REST_Y, 0.0)))
+		bodies.append(_add_crowd_body(world, Vector3(right_x, REST_Y, 0.0)))
+	var shallow_left: float = bodies[0].global_position.x
+	var shallow_right: float = bodies[1].global_position.x
+	for _i: int in TICKS:
+		await get_tree().physics_frame
+		for c: StairsBody in bodies:
+			c.velocity = Vector3(0.0, c.velocity.y - GRAVITY * DELTA, 0.0)
+			c.move_and_stair_step()
+	var shallow_held: bool = (
+		absf(bodies[0].global_position.x - shallow_left) < HELD
+		and absf(bodies[1].global_position.x - shallow_right) < HELD
+	)
+	var deep_overlap: float = 2.0 * BODY_RADIUS - (
+		bodies[3].global_position.x - bodies[2].global_position.x
+	)
+
+	_check(
+		"b30 crowd overlap under the slop is left alone",
+		shallow_held and absf(deep_overlap - SLOP) < CONVERGED,
+		"shallow pair held %s, deep pair overlaps %.4f m expected %.4f"
+		% [shallow_held, deep_overlap, SLOP],
 	)
 	world.queue_free()
 

@@ -300,8 +300,9 @@ double StairsBody::_foot_gap(const Neighbour &p_a, const Vector3 &p_a_shift, con
 // into a snapshot: footprint, layers and space, so nothing below calls the engine.
 // Pairs of members that are crowd to each other and could touch this frame are found
 // once through a grid, and kept as each member's neighbour list.
-// Every pair that overlaps is then pushed apart, each taking half, over a few Jacobi
-// passes - the separation step of DetourCrowd and of position-based crowds. Each
+// Every pair that overlaps past CROWD_SLOP is then pushed back to it, each taking
+// half, over a few Jacobi passes - the separation step of DetourCrowd and of
+// position-based crowds, with Box2D's slop so a still pile settles. Each
 // member's push is not applied here but added to its own next move, so the move's
 // sweeps carry it and it never goes into a wall.
 void StairsBody::_crowd_frame() {
@@ -384,11 +385,11 @@ void StairsBody::_crowd_frame() {
 		for (const std::pair<uint32_t, uint32_t> &pair : s_pairs) {
 			Vector3 normal;
 			const double gap = _foot_gap(s_snap[pair.first].foot, shift[pair.first], s_snap[pair.second].foot, shift[pair.second], normal);
-			if (gap >= 0.0) {
+			if (gap >= -CROWD_SLOP) {
 				continue;
 			}
-			delta[pair.first] += normal * (-gap * 0.5);
-			delta[pair.second] -= normal * (-gap * 0.5);
+			delta[pair.first] += normal * ((-gap - CROWD_SLOP) * 0.5);
+			delta[pair.second] -= normal * ((-gap - CROWD_SLOP) * 0.5);
 			overlapped = true;
 		}
 		if (!overlapped) {
@@ -404,7 +405,7 @@ void StairsBody::_crowd_frame() {
 }
 
 // This move's crowd neighbours, where they stand now plus any push they have not
-// yet taken, and whether the body overlaps any of them. Brings the snapshot up to
+// yet taken, and whether the body overlaps any of them past the slop. Brings the snapshot up to
 // this physics frame first.
 bool StairsBody::_crowd_gather() {
 	_neighbours.clear();
@@ -438,17 +439,18 @@ bool StairsBody::_crowd_gather() {
 			continue;
 		}
 		n.floor_y = MAX(_me.bottom, n.bottom);
-		overlapping = overlapping || gap < 0.0;
+		n.least_gap = CLAMP(gap, -CROWD_SLOP, 0.0);
+		overlapping = overlapping || gap < -CROWD_SLOP;
 		_neighbours.push_back(n);
 	}
 	return overlapping || _crowd_pending != Vector3();
 }
 
 // The horizontal part of `motion`, plus the push the crowd pass left this body,
-// projected out of every gathered neighbour. That stops the body walking into one
-// and pushes it out of any it still overlaps: the position step of position-based
-// dynamics, against neighbours held still. Lists the neighbours touched where the
-// body ends, and clips velocity against them.
+// projected out of every gathered neighbour. That stops the body walking into one,
+// and never lets it go deeper into one it already overlaps, nor deeper than the slop:
+// the position step of position-based dynamics, against neighbours held still.
+// Lists the neighbours touched where the body ends, and clips velocity against them.
 Vector3 StairsBody::_crowd_solve(const Vector3 &p_motion) {
 	Vector3 offset = p_motion * HORIZONTAL_MASK + _crowd_pending;
 	_crowd_pending = Vector3();
@@ -457,8 +459,8 @@ Vector3 StairsBody::_crowd_solve(const Vector3 &p_motion) {
 		for (const Neighbour &n : _neighbours) {
 			Vector3 normal;
 			const double gap = _foot_gap(_me, offset, n, Vector3(), normal);
-			if (gap < 0.0) {
-				offset += normal * -gap;
+			if (gap < n.least_gap) {
+				offset += normal * (n.least_gap - gap);
 				moved = true;
 			}
 		}
