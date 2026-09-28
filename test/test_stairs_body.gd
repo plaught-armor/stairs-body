@@ -1293,11 +1293,10 @@ func _case_b29_a_resting_body_is_checked_again_when_its_collider_changes() -> vo
 
 ## Crowd separation leaves an overlap under its slop alone, as Box2D's contact solver
 ## does, so still bodies in a pile stop being nudged and can rest. Deeper overlap is
-## pushed back to the slop, not to touching. Two still pairs: one set 3 mm into each
-## other stays exactly where it was put, one set 30 mm in ends 5 mm in.
+## pushed all the way back to touching. Two still pairs: one set 3 mm into each other
+## stays exactly where it was put, one set 30 mm in ends touching.
 func _case_b30_crowd_overlap_under_the_slop_is_left_alone() -> void:
-	# CROWD_SLOP in src/stairs_body.h; retune both together.
-	const SLOP: float = 0.005
+	# Under CROWD_SLOP (5 mm, src/stairs_body.h); retune both together.
 	const SHALLOW: float = 0.003
 	const DEEP: float = 0.03
 	const TICKS: int = 30
@@ -1328,9 +1327,8 @@ func _case_b30_crowd_overlap_under_the_slop_is_left_alone() -> void:
 
 	_check(
 		"b30 crowd overlap under the slop is left alone",
-		shallow_held and absf(deep_overlap - SLOP) < CONVERGED,
-		"shallow pair held %s, deep pair overlaps %.4f m expected %.4f"
-		% [shallow_held, deep_overlap, SLOP],
+		shallow_held and absf(deep_overlap) < CONVERGED,
+		"shallow pair held %s, deep pair overlaps %.4f m expected 0" % [shallow_held, deep_overlap],
 	)
 	world.queue_free()
 

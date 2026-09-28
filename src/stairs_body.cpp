@@ -300,8 +300,8 @@ double StairsBody::_foot_gap(const Neighbour &p_a, const Vector3 &p_a_shift, con
 // into a snapshot: footprint, layers and space, so nothing below calls the engine.
 // Pairs of members that are crowd to each other and could touch this frame are found
 // once through a grid, and kept as each member's neighbour list.
-// Every pair that overlaps past CROWD_SLOP is then pushed back to it, each taking
-// half, over a few Jacobi passes - the separation step of DetourCrowd and of
+// Every pair that overlaps past CROWD_SLOP is then pushed back to touching, each
+// taking half, over a few Jacobi passes - the separation step of DetourCrowd and of
 // position-based crowds, with Box2D's slop so a still pile settles. Each
 // member's push is not applied here but added to its own next move, so the move's
 // sweeps carry it and it never goes into a wall.
@@ -388,8 +388,8 @@ void StairsBody::_crowd_frame() {
 			if (gap >= -CROWD_SLOP) {
 				continue;
 			}
-			delta[pair.first] += normal * ((-gap - CROWD_SLOP) * 0.5);
-			delta[pair.second] -= normal * ((-gap - CROWD_SLOP) * 0.5);
+			delta[pair.first] += normal * (-gap * 0.5);
+			delta[pair.second] -= normal * (-gap * 0.5);
 			overlapped = true;
 		}
 		if (!overlapped) {
@@ -439,7 +439,7 @@ bool StairsBody::_crowd_gather() {
 			continue;
 		}
 		n.floor_y = MAX(_me.bottom, n.bottom);
-		n.least_gap = CLAMP(gap, -CROWD_SLOP, 0.0);
+		n.least_gap = gap >= -CROWD_SLOP ? MIN(gap, 0.0) : 0.0;
 		overlapping = overlapping || gap < -CROWD_SLOP;
 		_neighbours.push_back(n);
 	}
@@ -448,7 +448,8 @@ bool StairsBody::_crowd_gather() {
 
 // The horizontal part of `motion`, plus the push the crowd pass left this body,
 // projected out of every gathered neighbour. That stops the body walking into one,
-// and never lets it go deeper into one it already overlaps, nor deeper than the slop:
+// and never lets it go deeper into one it already overlaps within the slop, and pushes
+// it out of one it overlaps past the slop:
 // the position step of position-based dynamics, against neighbours held still.
 // Lists the neighbours touched where the body ends, and clips velocity against them.
 Vector3 StairsBody::_crowd_solve(const Vector3 &p_motion) {
