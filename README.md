@@ -46,6 +46,7 @@ not have helped much. The only way to get cheaper was to run fewer queries.
 | Leaving a floor | +1 (the floor probe, only where contact is lost) |
 | On a moving platform | +1 (the carry, as its own sweep) |
 | Standing on a body on `step_ignore_layers` | +1 (the contact test again, with the whole mask) |
+| Pressed into a body on `step_ignore_layers` | 3 (move, a sweep past it at floor height, contact test) |
 
 **Then C++, because it is meant for crowds.** With the slide in the class, the
 class's own code became a real share of the frame: 16-34% under Tracy. The target
@@ -66,8 +67,10 @@ per frame:
 Most of what is left is the engine's own sweeps. In a crowd pressed together,
 every sweep also pays to push out of the neighbours the body overlaps; put the
 crowd's own layer in `step_ignore_layers` and the checks that only look for steps
-and floor skip that. `test/bench_pile.gd`, 96 box-shaped bodies pressed into a pile
-under Jolt, runs at about 34 µs per body.
+and floor skip that. A neighbour the move meets is not tried as a step either,
+unless something stands behind it at floor height. `test/bench_pile.gd`, 96
+box-shaped bodies pressed into a pile, runs at about 32 µs per body under Jolt and 48
+under Godot Physics.
 
 Both GDScript classes, and the benchmarks and diagnostics written for
 `StairsCharacter`, are kept at the git tag `gdscript-final`.

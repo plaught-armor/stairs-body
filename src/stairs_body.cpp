@@ -337,7 +337,7 @@ void StairsBody::_record_floor(const Vector3 &p_normal, int p_index) {
 	_on_floor = true;
 	_floor_normal = p_normal;
 	const RID rid = _result->get_collider_rid(p_index);
-	if (step_ignore_layers != 0 && (physics()->body_get_collision_layer(rid) & step_ignore_layers) != 0) {
+	if (_ignored_for_steps(rid)) {
 		_floor_rid = RID();
 		_floor_id = 0;
 		_platform_velocity = Vector3();
@@ -556,6 +556,13 @@ bool StairsBody::_step_sweeps(const Transform3D &p_at, const Vector3 &p_remainde
 	if (_refused_here(p_at.origin, p_wall_normal, wall_rid)) {
 		return false;
 	}
+	Vector3 forward = p_remainder * HORIZONTAL_MASK;
+	if (forward.length() < min_step_forward) {
+		forward = (-p_wall_normal * HORIZONTAL_MASK).normalized() * min_step_forward;
+	}
+	if (_ignored_for_steps(wall_rid) && !_blocked_behind(p_at, forward)) {
+		return false;
+	}
 
 	_params->set_from(p_at);
 	_params->set_motion(WORLD_UP * step_height);
@@ -567,11 +574,6 @@ bool StairsBody::_step_sweeps(const Transform3D &p_at, const Vector3 &p_remainde
 		return false;
 	}
 	const Transform3D raised = p_at.translated(WORLD_UP * rise);
-
-	Vector3 forward = p_remainder * HORIZONTAL_MASK;
-	if (forward.length() < min_step_forward) {
-		forward = (-p_wall_normal * HORIZONTAL_MASK).normalized() * min_step_forward;
-	}
 	const Transform3D ahead = _step_forward(raised, forward);
 	if ((ahead.origin - raised.origin).length() < safe_margin) {
 		// Only a leg that had room to move and was blocked says anything about the
@@ -607,6 +609,23 @@ bool StairsBody::_step_sweeps(const Transform3D &p_at, const Vector3 &p_remainde
 	_step_to = landed;
 	_step_rise = landed.origin.y - p_at.origin.y;
 	return true;
+}
+
+// Whether `body` is on step_ignore_layers.
+bool StairsBody::_ignored_for_steps(const RID &p_body) const {
+	return step_ignore_layers != 0 && (physics()->body_get_collision_layer(p_body) & step_ignore_layers) != 0;
+}
+
+// Whether anything the step sweeps see blocks the step's forward leg at floor
+// height, from where the move met a face on step_ignore_layers. Nothing there means
+// nothing behind that body to climb, and the three step sweeps would land level and
+// be refused: in a pile of 96 bodies, 47k of them on Godot Physics, none landing. A
+// face behind it, such as a kerb under a slab lying flush with its edge, still gets
+// the step. Called with those layers masked out, as the step sweeps are.
+bool StairsBody::_blocked_behind(const Transform3D &p_at, const Vector3 &p_forward) {
+	_params->set_from(p_at);
+	_params->set_motion(p_forward);
+	return _test_motion(_params);
 }
 
 Transform3D StairsBody::_step_forward(Transform3D p_from, const Vector3 &p_forward) {

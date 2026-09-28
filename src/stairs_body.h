@@ -144,6 +144,8 @@ private:
 	bool _try_step(const Transform3D &p_at, const Vector3 &p_remainder, const Vector3 &p_wall_normal);
 	bool _step_sweeps(const Transform3D &p_at, const Vector3 &p_remainder, const Vector3 &p_wall_normal);
 	Transform3D _step_forward(Transform3D p_from, const Vector3 &p_forward);
+	bool _ignored_for_steps(const RID &p_body) const;
+	bool _blocked_behind(const Transform3D &p_at, const Vector3 &p_forward);
 	bool _refused_here(const Vector3 &p_origin, const Vector3 &p_normal, const RID &p_rid) const;
 	void _remember_refusal(const Vector3 &p_origin, const Vector3 &p_normal, const RID &p_rid);
 	double _probe_floor();
