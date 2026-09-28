@@ -1,9 +1,13 @@
 #include "stairs_body.h"
 
 #include <godot_cpp/classes/box_shape3d.hpp>
+#include <godot_cpp/classes/capsule_shape3d.hpp>
+#include <godot_cpp/classes/concave_polygon_shape3d.hpp>
+#include <godot_cpp/classes/convex_polygon_shape3d.hpp>
+#include <godot_cpp/classes/height_map_shape3d.hpp>
+#include <godot_cpp/classes/sphere_shape3d.hpp>
 #include <godot_cpp/classes/cylinder_shape3d.hpp>
 #include <godot_cpp/classes/engine.hpp>
-#include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/physics_direct_body_state3d.hpp>
 #include <godot_cpp/classes/physics_direct_space_state3d.hpp>
 #include <godot_cpp/classes/shape3d.hpp>
@@ -131,7 +135,11 @@ void StairsBody::_record_contact(int p_index) {
 }
 
 // Moves the body by velocity for one physics frame, stepping up and down stairs.
-void StairsBody::move_and_stair_step() {
+// `time_scale` stretches the frame, for a caller that moves the body less often
+// than every frame: 2 moves it for two frames' worth of time, once.
+void StairsBody::move_and_stair_step(double p_time_scale) {
+	ERR_FAIL_COND_MSG(!(p_time_scale > 0.0), "time_scale must be positive.");
+	_time_scale = p_time_scale;
 	const bool overlapping = _crowd_gather();
 	if (!overlapping && _resting()) {
 		velocity.y = 0.0;
@@ -139,7 +147,7 @@ void StairsBody::move_and_stair_step() {
 	}
 	const bool still = _still() && !overlapping;
 	_params->set_margin(safe_margin);
-	const double delta = get_physics_process_delta_time();
+	const double delta = get_physics_process_delta_time() * p_time_scale;
 	const bool was_on_floor = _on_floor;
 	_contacts.clear();
 	if (was_on_floor) {
@@ -226,6 +234,53 @@ void StairsBody::_notification(int p_what) {
 	}
 }
 
+// A shape's bounds in its own frame, from its parameters. Not from get_debug_mesh:
+// that builds a mesh through the RenderingServer, and a body's first move then
+// waited on the GPU, 0.5-3.6 ms a body while a wave of them spawned. Returns false
+// for a shape with no finite bounds, which the footprint leaves out.
+static bool shape_bounds(const Ref<Shape3D> &p_shape, AABB &r_bounds) {
+	if (const BoxShape3D *box = Object::cast_to<BoxShape3D>(p_shape.ptr())) {
+		r_bounds = AABB(-box->get_size() * 0.5, box->get_size());
+		return true;
+	}
+	if (const SphereShape3D *sphere = Object::cast_to<SphereShape3D>(p_shape.ptr())) {
+		const double r = sphere->get_radius();
+		r_bounds = AABB(Vector3(-r, -r, -r), Vector3(r, r, r) * 2.0);
+		return true;
+	}
+	if (const CapsuleShape3D *capsule = Object::cast_to<CapsuleShape3D>(p_shape.ptr())) {
+		const double r = capsule->get_radius();
+		const double h = MAX((double)capsule->get_height(), r * 2.0);
+		r_bounds = AABB(Vector3(-r, -h * 0.5, -r), Vector3(r * 2.0, h, r * 2.0));
+		return true;
+	}
+	if (const CylinderShape3D *cylinder = Object::cast_to<CylinderShape3D>(p_shape.ptr())) {
+		const double r = cylinder->get_radius();
+		const double h = cylinder->get_height();
+		r_bounds = AABB(Vector3(-r, -h * 0.5, -r), Vector3(r * 2.0, h, r * 2.0));
+		return true;
+	}
+	PackedVector3Array points;
+	if (const ConvexPolygonShape3D *convex = Object::cast_to<ConvexPolygonShape3D>(p_shape.ptr())) {
+		points = convex->get_points();
+	} else if (const ConcavePolygonShape3D *concave = Object::cast_to<ConcavePolygonShape3D>(p_shape.ptr())) {
+		points = concave->get_faces();
+	} else if (const HeightMapShape3D *height_map = Object::cast_to<HeightMapShape3D>(p_shape.ptr())) {
+		const Vector3 size(height_map->get_map_width() - 1, 0.0, height_map->get_map_depth() - 1);
+		r_bounds = AABB(Vector3(-size.x * 0.5, height_map->get_min_height(), -size.z * 0.5),
+				Vector3(size.x, height_map->get_max_height() - height_map->get_min_height(), size.z));
+		return true;
+	}
+	if (points.is_empty()) {
+		return false;
+	}
+	r_bounds = AABB(points[0], Vector3());
+	for (int64_t i = 1; i < points.size(); i++) {
+		r_bounds.expand_to(points[i]);
+	}
+	return true;
+}
+
 // The body's shapes' combined bounds, in its own frame, as a capsule lying in the
 // horizontal plane along the longer of x and z. Measured once, from the first move
 // that finds shapes on the body.
@@ -240,11 +295,11 @@ void StairsBody::_measure_footprint() {
 		}
 		const Transform3D at = shape_owner_get_transform(owner_id);
 		for (int i = 0; i < shape_owner_get_shape_count(owner_id); i++) {
-			const Ref<ArrayMesh> mesh = shape_owner_get_shape(owner_id, i)->get_debug_mesh();
-			if (mesh.is_null()) {
+			AABB local;
+			if (!shape_bounds(shape_owner_get_shape(owner_id, i), local)) {
 				continue;
 			}
-			const AABB box = at.xform(mesh->get_aabb());
+			const AABB box = at.xform(local);
 			bounds = any ? bounds.merge(box) : box;
 			any = true;
 		}
@@ -320,16 +375,20 @@ void StairsBody::_crowd_frame() {
 		CrowdSnap &snap = s_snap[i];
 		snap.body = member;
 		snap.foot = member->_foot_world(member->get_global_transform());
+		// A push the member has not yet taken, because it skipped its move, is still
+		// owed: count it as taken, and keep it for the member's next move.
+		snap.foot.centre += member->_crowd_pending;
 		snap.layer = member->get_collision_layer();
 		snap.crowd = member->crowd_layers;
 		snap.space = member->_space;
 		// Reach grows by how far the member may walk this frame, at last frame's
-		// speed, so two closing on each other are listed before they meet.
-		snap.reach = member->_foot_radius + member->_foot_half_length + (member->velocity * HORIZONTAL_MASK).length() * frame_time;
+		// speed and time scale, so two closing on each other are listed before they
+		// meet.
+		snap.reach = member->_foot_radius + member->_foot_half_length +
+				(member->velocity * HORIZONTAL_MASK).length() * frame_time * member->_time_scale;
 		snap.first = 0;
 		snap.count = 0;
 		member->_snap_index = i;
-		member->_crowd_pending = Vector3();
 		reach = MAX(reach, snap.reach);
 	}
 	const double cell = MAX(reach * 2.0 + CROWD_LOOKAHEAD, 0.01);
@@ -402,7 +461,7 @@ void StairsBody::_crowd_frame() {
 		}
 	}
 	for (uint32_t i = 0; i < count; i++) {
-		g_members[i]->_crowd_pending = shift[i];
+		g_members[i]->_crowd_pending += shift[i];
 	}
 }
 
@@ -1383,7 +1442,7 @@ Vector3 StairsBody::get_contact_position(int p_index) const {
 }
 
 void StairsBody::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("move_and_stair_step"), &StairsBody::move_and_stair_step);
+	ClassDB::bind_method(D_METHOD("move_and_stair_step", "time_scale"), &StairsBody::move_and_stair_step, DEFVAL(1.0));
 	ClassDB::bind_static_method("StairsBody", D_METHOD("is_step_surface", "body", "ignore_layers"), &StairsBody::is_step_surface, DEFVAL(0));
 	ClassDB::bind_method(D_METHOD("is_on_floor"), &StairsBody::is_on_floor);
 	ClassDB::bind_method(D_METHOD("is_on_wall"), &StairsBody::is_on_wall);

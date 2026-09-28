@@ -299,6 +299,26 @@ body still moves only as far as its velocity carries it. It matters more under
 Jolt, which parks a blocked body about 4.2 mm off the face where Godot Physics
 parks it flush.
 
+### Moving a body less often than every frame
+
+A body far from the camera can be moved every other frame, or every fourth, to
+save its cost. Skip the call on the frames in between, and on the frames it moves,
+pass the stretch as `time_scale`, with `velocity` and `desired_velocity` left at
+their real values:
+
+```gdscript
+if Engine.get_physics_frames() % 2 == 0:
+    velocity.y -= gravity * delta * 2.0   # the caller's own integration stretches too
+    move_and_stair_step(2.0)
+```
+
+The move then covers two frames' worth of time: the step probe, a moving floor's
+carry and the floor it keeps follow the stretched frame. Crowd separation reaches
+as far as the body walks, and a push the crowd pass gives it on a frame it skips
+is kept for its next move. Scaling `velocity` instead gets the slide right but not
+those: the crowd pass reads the unscaled velocity and lists neighbours a frame
+late, and a moving floor carries the body half as far.
+
 ## Signals
 
 | Signal | Emitted |

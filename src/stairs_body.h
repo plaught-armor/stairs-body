@@ -176,6 +176,9 @@ private:
 	Neighbour _me;
 	// The crowd pass's push for this body, taken by its next move.
 	Vector3 _crowd_pending;
+	// The time scale of this body's last move, so the crowd pass reaches as far as
+	// the body walks when it moves less often than every frame.
+	double _time_scale = 1.0;
 	// This body's place in the crowd snapshot, or UINT32_MAX when not in it.
 	uint32_t _snap_index = UINT32_MAX;
 	// One member as the crowd pass read it at the start of the physics frame, and
@@ -277,7 +280,7 @@ protected:
 public:
 	StairsBody();
 
-	void move_and_stair_step();
+	void move_and_stair_step(double p_time_scale = 1.0);
 	static bool is_step_surface(const RID &p_body, uint32_t p_ignore_layers = 0);
 
 	bool is_on_floor() const { return _on_floor; }

@@ -66,6 +66,9 @@ func _run_all() -> void:
 	await _case_b30_crowd_overlap_under_the_slop_is_left_alone()
 	await _case_b31_held_still_at_a_step_with_intent_into_it_climbs()
 	await _case_b32_a_slow_walk_off_a_ledge_drops_within_the_settle_reach()
+	await _case_b33_a_body_moved_every_fourth_frame_keeps_its_crowd_distance()
+	await _case_b34_a_stretched_frame_climbs_a_step_and_drops_off_a_ledge()
+	await _case_b35_a_crowd_push_given_on_a_skipped_frame_is_kept()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -1426,3 +1429,133 @@ func _case_b32_a_slow_walk_off_a_ledge_drops_within_the_settle_reach() -> void:
 		late.is_empty(),
 		"late: %s" % [late],
 	)
+
+
+## A caller moving a body every fourth frame passes time_scale 4 and leaves its
+## velocity real. The crowd pass reaches as far as that body walks, four frames'
+## worth, so walking head-on into a body moved every frame it still stops touching.
+## Reaching one frame's worth, past CROWD_LOOKAHEAD's slack, the pair was listed
+## too late and the two walked into each other. Their footprints start 1.4 m apart
+## and close 40 cm every four frames, so before b's fourth move they are 20 cm
+## apart and close 25 cm in that frame, where one frame's reach lists them at 15 cm.
+func _case_b33_a_body_moved_every_fourth_frame_keeps_its_crowd_distance() -> void:
+	const SPEED: float = 3.0
+	const EVERY: int = 4
+	const TICKS: int = 90
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(20.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	var a: StairsBody = _add_crowd_body(world, Vector3(-1.0, REST_Y, 0.0))
+	var b: StairsBody = _add_crowd_body(world, Vector3(1.0, REST_Y, 0.0))
+	var closest: float = INF
+	for i: int in TICKS:
+		await get_tree().physics_frame
+		a.velocity = Vector3(SPEED, a.velocity.y - GRAVITY * DELTA, 0.0)
+		a.desired_velocity = Vector3(SPEED, 0.0, 0.0)
+		a.move_and_stair_step()
+		if i % EVERY == 0:
+			b.velocity = Vector3(-SPEED, b.velocity.y - GRAVITY * DELTA * EVERY, 0.0)
+			b.desired_velocity = Vector3(-SPEED, 0.0, 0.0)
+			b.move_and_stair_step(float(EVERY))
+		closest = minf(closest, b.global_position.x - a.global_position.x)
+	var apart: float = b.global_position.x - a.global_position.x
+
+	_check(
+		"b33 a body moved every fourth frame keeps its crowd distance",
+		(
+			absf(apart - 2.0 * BODY_RADIUS) < CROWD_TOLERANCE
+			and closest > 2.0 * BODY_RADIUS - CROWD_TOLERANCE
+		),
+		"%.4f m apart expected %.2f, closest %.4f" % [apart, 2.0 * BODY_RADIUS, closest],
+	)
+	world.queue_free()
+
+
+## Moved every second and every fourth frame with that time scale, a walk climbs a
+## step and drops off a ledge as a walk moved every frame does: the step probe, the
+## floor it keeps and the ledge it leaves all follow the stretched frame.
+func _case_b34_a_stretched_frame_climbs_a_step_and_drops_off_a_ledge() -> void:
+	const WALK: float = 1.5
+	const DROP: float = 0.1
+	const SLACK: float = 0.002
+	# SETTLE_REACH in src/stairs_body.h; retune both together.
+	const REACH: float = 0.01
+	var failed: PackedStringArray = []
+	for every: int in [2, 4]:
+		var scale: float = float(every)
+		var world: Node3D = _slow_walk_world(true)
+		var c: StairsBody = _add_body(world, Vector3(0.4, REST_Y, 0.0))
+		for i: int in 90:
+			await get_tree().physics_frame
+			if i % every != 0:
+				continue
+			c.velocity = Vector3(WALK, c.velocity.y - GRAVITY * DELTA * scale, 0.0)
+			c.desired_velocity = Vector3(WALK, 0.0, 0.0)
+			c.move_and_stair_step(scale)
+		if absf(c.global_position.y - (REST_Y + STEP_TOP)) > EPS or c.global_position.x < 1.3:
+			failed.append("x%d climb ended at %v" % [every, c.global_position])
+		world.queue_free()
+
+		world = _new_world()
+		_add_box(world, Vector3(4.0, 1.0, 4.0), Vector3(-2.0, -0.5, 0.0))
+		_add_box(world, Vector3(4.0, 1.0, 4.0), Vector3(2.0, -0.5 - DROP, 0.0))
+		c = _add_body(world, Vector3(-0.02, REST_Y, 0.0))
+		var dropped_at: float = INF
+		for i: int in 120:
+			await get_tree().physics_frame
+			if i % every != 0:
+				continue
+			c.velocity = Vector3(WALK * 0.2, c.velocity.y - GRAVITY * DELTA * scale, 0.0)
+			c.desired_velocity = Vector3(WALK * 0.2, 0.0, 0.0)
+			c.move_and_stair_step(scale)
+			if c.global_position.y < REST_Y - DROP * 0.5:
+				dropped_at = c.global_position.x
+				break
+		var bound: float = BODY_RADIUS + REACH + WALK * 0.2 * DELTA * scale + SLACK
+		if dropped_at > bound:
+			failed.append("x%d dropped at x=%.4f past %.4f" % [every, dropped_at, bound])
+		world.queue_free()
+
+	_check(
+		"b34 a stretched frame climbs a step and drops off a ledge",
+		failed.is_empty(),
+		"%s" % [failed],
+	)
+
+
+## A push the crowd pass gives a body on a frame it skips is kept for its next
+## move. A pair left 30 mm into each other, one moved every frame and one every
+## fourth frame, starting on a skipped frame, ends exactly touching, each having
+## moved half the overlap. Dropped, the skipper's half was given again to the pair
+## each frame, and the body moved every frame took nearly all of it.
+func _case_b35_a_crowd_push_given_on_a_skipped_frame_is_kept() -> void:
+	const DEEP: float = 0.03
+	const EVERY: int = 4
+	const TICKS: int = 32
+	const CONVERGED: float = 0.001
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(20.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	var a: StairsBody = _add_crowd_body(world, Vector3(-BODY_RADIUS + DEEP * 0.5, REST_Y, 0.0))
+	var b: StairsBody = _add_crowd_body(world, Vector3(BODY_RADIUS - DEEP * 0.5, REST_Y, 0.0))
+	var a_start: float = a.global_position.x
+	var b_start: float = b.global_position.x
+	for i: int in TICKS:
+		await get_tree().physics_frame
+		a.velocity = Vector3(0.0, a.velocity.y - GRAVITY * DELTA, 0.0)
+		a.move_and_stair_step()
+		if i % EVERY == EVERY - 1:
+			b.velocity = Vector3(0.0, b.velocity.y - GRAVITY * DELTA * EVERY, 0.0)
+			b.move_and_stair_step(float(EVERY))
+	var overlap: float = 2.0 * BODY_RADIUS - (b.global_position.x - a.global_position.x)
+	var a_moved: float = a_start - a.global_position.x
+	var b_moved: float = b.global_position.x - b_start
+
+	_check(
+		"b35 a crowd push given on a skipped frame is kept",
+		(
+			absf(overlap) < CONVERGED and absf(a_moved - DEEP * 0.5) < CONVERGED
+			and absf(b_moved - DEEP * 0.5) < CONVERGED
+		),
+		"overlap %.4f m expected 0, moved %.4f and %.4f expected %.3f each"
+		% [overlap, a_moved, b_moved, DEEP * 0.5],
+	)
+	world.queue_free()

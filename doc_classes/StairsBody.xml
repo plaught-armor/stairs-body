@@ -105,8 +105,10 @@
 		</method>
 		<method name="move_and_stair_step">
 			<return type="void" />
+			<param index="0" name="time_scale" type="float" default="1.0" />
 			<description>
 				Moves the body by [member velocity] for one physics frame, stepping up and down stairs. Call it from [method Node._physics_process].
+				[param time_scale] stretches the frame for a body moved less often than every frame: a body moved every other frame passes [code]2.0[/code] on the frames it moves and skips the call on the others, with [member velocity] and [member desired_velocity] left at their real values. Crowd separation reaches as far as such a body walks, and a push it is given on a frame it skips is kept for its next move.
 			</description>
 		</method>
 	</methods>
