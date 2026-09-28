@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="StairsWalkGrid" inherits="Node3D" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/godotengine/godot/master/doc/class.xsd">
+	<brief_description>
+		A level's static boxes, indexed so [StairsBody] nodes can walk on them without physics queries.
+	</brief_description>
+	<description>
+		Give it to a [StairsBody] as [member StairsBody.walk_grid], and while the body walks on what it baked, its moves make no physics queries: it moves over the boxes analytically, the way crowds in shipped games walk on baked navigation data and use physics only when they must.
+		Bakes the [StaticBody3D] nodes under its parent, or under itself when it has none. Boxes turned only about the vertical, at any scale, on a layer in [member collision_mask], are baked. Every other static shape there is kept as a region the grid does not answer for, and a body that collides with it sweeps near it: other shapes, boxes tilted off the vertical, bodies on layers outside the mask, and conveyors (a nonzero [member StaticBody3D.constant_linear_velocity] or [member StaticBody3D.constant_angular_velocity]). A level whose ground is one trimesh or [WorldBoundaryShape3D] is therefore walked by sweeps throughout. [AnimatableBody3D] and other bodies that move are not baked, and a body walking on the grid does not see them.
+		It bakes the first time a body uses it; call [method bake] while the level loads to keep that cost off a frame. The index does not follow changes to the level: after adding, removing or moving static geometry, call [method bake] again. A level too large to index, past 16 million 2 m bins, bakes nothing and says so, and bodies sweep. Main thread only.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="bake">
+			<return type="void" />
+			<description>
+				Rebuilds the index from the static bodies as they are now.
+			</description>
+		</method>
+		<method name="get_box_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Number of boxes baked.
+			</description>
+		</method>
+		<method name="get_unknown_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Number of shapes left out of the index, whose regions the grid does not answer for.
+			</description>
+		</method>
+		<method name="is_baked" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Whether the index has been built.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="collision_mask" type="int" setter="set_collision_mask" getter="get_collision_mask" default="1">
+			Physics layers whose static bodies are baked.
+		</member>
+	</members>
+</class>

@@ -54,7 +54,7 @@ fi
 
 # Every suite runs even when an earlier one fails, and the exit code is the total.
 failed=0
-for scene in test_stairs.tscn test_stairs_body.tscn; do
+for scene in test_stairs.tscn test_stairs_body.tscn test_walk_grid.tscn; do
 	status=0
 	"$GODOT" --headless --path "$PROJECT" "res://test/$scene" || status=$?
 	failed=$((failed + status))

@@ -407,6 +407,105 @@ What changes:
 - Moving or resizing a member's shapes after it first moves is not seen: the
   footprint is measured once.
 
+## Walk grid
+
+A crowd far from the camera does not need a physics query per move. Shipped games
+walk their crowds on baked navigation data and hand an agent to physics only when
+it is shoved or falls, as Unreal's navmesh walking mode does. `StairsWalkGrid` does that for levels built from boxes: a
+body given one moves over the level's boxes analytically, with no physics query,
+and makes its ordinary sweeps wherever the grid cannot answer.
+
+`test/bench_frame.gd -- --grid`, in microseconds per character per frame:
+
+| | Grid | Godot Physics | Jolt |
+|---|---|---|---|
+| walking, flat ground | 0.6 | 15.6 | 6.5 |
+| pressed into a tall wall | 1.3 | 41 | 19 |
+| climbing a flight | 1.0 | 18.4 | 12.1 |
+
+In the pile of 96 (`bench_pile.gd -- --crowd --grid`) a body costs 4.6 µs, against
+13.4 and 9.8; nearly all of that is now crowd separation.
+
+### Setting it up
+
+Add a `StairsWalkGrid` under the level's root, beside its static geometry. It bakes
+the `StaticBody3D` nodes under its parent. Baking is lazy, on the first move that
+uses it, so bake it while the level loads to keep that cost off a frame:
+
+```gdscript
+@onready var _grid: StairsWalkGrid = $StairsWalkGrid
+
+func _ready() -> void:
+    _grid.bake()
+```
+
+Then choose, per body, which moves use it. A body sees nothing that moves while it
+walks on the grid (below), so keep the ones near the player and near moving things
+off it. Distance is the usual rule, and it combines with `time_scale` for bodies
+moved less often:
+
+```gdscript
+func _physics_process(delta: float) -> void:
+    var far: bool = global_position.distance_squared_to(_player.global_position) > 15.0 * 15.0
+    walk_grid = _grid if far else null
+    velocity.y -= gravity * delta
+    move_and_stair_step()
+```
+
+`is_on_walk_grid()` says which way the last move went. Switching is free: set
+`walk_grid` at any time, including every frame.
+
+### What a move on the grid does
+
+- It slides along boxes taller than `step_height`, stopping `safe_margin` short.
+- It steps up onto the highest box top under its footprint that is no higher than
+  `step_height`, and steps down within the step-down reach.
+- Crowd separation, the signals and the floor, wall and contact getters work as
+  they do with sweeps.
+
+A move is made by sweeps instead, and the body returns to the grid once it stands
+on a baked box again, when:
+
+| The body | because |
+|---|---|
+| is not on a floor, or is rising | a fall or a jump is physics |
+| stands on a floor the grid did not bake | a conveyor, a moving platform, another shape |
+| would drop further than the step-down reach | it falls, by sweeps |
+| would step up under a ceiling too low for it | the sweeps refuse that step |
+| is near a static shape the grid left out | see below |
+| is more than 5 mm from the grid's floor | it is not standing where the grid says |
+
+### Levels the grid can walk
+
+The grid bakes `StaticBody3D` boxes turned only about the vertical, on its
+`collision_mask`. Everything else static is a region it leaves to the sweeps:
+
+- Other shapes: a trimesh, a heightmap, cylinders, spheres, `WorldBoundaryShape3D`.
+- Boxes tilted off the vertical, such as a ramp.
+- Static bodies on layers outside the grid's mask. A body that collides with them
+  sweeps near them.
+- Conveyors, static bodies with a constant velocity.
+
+So a level built from boxes (floors, treads, walls, platforms) walks on the grid
+almost everywhere. A level whose ground is one imported trimesh does not: the whole
+ground is a region the grid leaves out, and bodies there always sweep. Build the
+walkable parts from boxes to use it.
+
+A body on the grid does not see anything that moves: moving platforms, rigid
+bodies, a player, and other `StairsBody` nodes. Bodies on the grid keep apart from
+each other only by crowd separation, so give a crowd that walks on it
+`crowd_layers` (see [Crowds](#crowds)); without it they walk through each other. The grid does not follow changes to the level either; call
+`bake()` after adding, removing or moving static geometry.
+
+Other differences from the sweeps:
+
+- `desired_velocity` alone does not climb a step on the grid; velocity does.
+- The footprint is the crowd footprint, a capsule lying flat. A box-shaped body's
+  corners stick out of it and can overlap a wall slightly on the grid.
+- A step up under Godot Physics carries a body up to `min_step_forward` past where
+  its velocity takes it; on the grid a body moves by its velocity alone.
+- Main thread only, as crowd separation is.
+
 ## Physics engines
 
 Godot Physics is the project default. Jolt is a first-class target, because it is
@@ -437,13 +536,15 @@ To run under Jolt, drop an `override.cfg` beside `project.godot`:
 
     test/run.sh
 
-Runs two headless suites and exits with the total number of failures:
+Runs three headless suites and exits with the total number of failures:
 
 - `test/test_stairs.gd`, 43 checks. They began as `StairsCharacter`'s suite and
   kept its case numbers, so the gaps are cases that tested that class's own API.
-- `test/test_stairs_body.gd`, 22 checks for machinery the first suite does not
+- `test/test_stairs_body.gd`, 36 checks for machinery the first suite does not
   reach: the tunnel guard, the refusal cache, the loose-step rule, the Jolt edge
-  handling, `step_ignore_layers` and the contact list.
+  handling, `step_ignore_layers`, the contact list and crowd separation.
+- `test/test_walk_grid.gd`, 18 checks that run each scenario on a walk grid and by
+  sweeps, and compare where the two end.
 
 Each builds its worlds procedurally. Build the extension with `scons` first;
 `run.sh` stops if the library is missing. Point `GODOT` at a binary if the defaults

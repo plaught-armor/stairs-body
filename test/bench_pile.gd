@@ -21,6 +21,11 @@ extends Node3D
 ## masks and goes in crowd_layers. Besides the time, a run prints the mean speed,
 ## the mean distance from the centre, which says how tight the pile packed, and how
 ## deep bodies sit inside each other, by the physics server's own depenetration.
+##
+##     godot --headless --path <repo root> res://test/bench_pile.tscn -- --crowd --grid
+##
+## walks the crowd on a StairsWalkGrid over the ground as well, and prints the share
+## of timed moves made on it.
 
 const BODIES: int = 96
 const PER_RING: int = 24
@@ -36,9 +41,19 @@ const CROWD_LAYER: int = 32
 var _bodies: Array[StairsBody] = []
 var _wish_speed: float = 0.0 if OS.get_cmdline_user_args().has("--idle") else WISH
 var _crowd: bool = OS.get_cmdline_user_args().has("--crowd")
+# Bodies on a walk grid keep apart only by crowd separation, so --grid needs --crowd.
+var _grid_asked: bool = OS.get_cmdline_user_args().has("--grid")
+var _grid: StairsWalkGrid = StairsWalkGrid.new() if _crowd and _grid_asked else null
+var _grid_moves: int = 0
 
 
 func _ready() -> void:
+	if _grid_asked and not _crowd:
+		push_error(
+			"--grid needs --crowd: bodies on a walk grid pass through each other without crowd separation"
+		)
+		get_tree().quit(1)
+		return
 	call_deferred(&"_run")
 
 
@@ -52,6 +67,8 @@ func _run() -> void:
 	add_child(ground)
 	ground.global_position = Vector3(0.0, -0.5, 0.0)
 	ground.collision_layer = WORLD_LAYER
+	if _grid != null:
+		add_child(_grid)
 	for i: int in BODIES:
 		var angle: float = TAU * float(i) / float(PER_RING)
 		var radius: float = 1.0 + 0.25 * float(i / PER_RING)
@@ -65,6 +82,8 @@ func _run() -> void:
 			_step(body)
 		if f >= TIMED_FROM:
 			total += Time.get_ticks_usec() - started
+			for body: StairsBody in _bodies:
+				_grid_moves += int(body.is_on_walk_grid())
 	var speed: float = 0.0
 	var spread: float = 0.0
 	for body: StairsBody in _bodies:
@@ -74,7 +93,7 @@ func _run() -> void:
 	print(
 		(
 			"piled %.2f us per body per frame, mean speed %.2f m/s, mean distance from centre %.3f m,"
-			+ " overlap mean %.1f mm max %.1f mm"
+			+ " overlap mean %.1f mm max %.1f mm, %.0f%% of moves on the grid"
 		)
 		% [
 			float(total) / float((FRAMES - TIMED_FROM) * BODIES),
@@ -82,6 +101,7 @@ func _run() -> void:
 			spread / float(BODIES),
 			overlap.x * 1000.0,
 			overlap.y * 1000.0,
+			100.0 * float(_grid_moves) / float((FRAMES - TIMED_FROM) * BODIES),
 		]
 	)
 	get_tree().quit()
@@ -118,6 +138,7 @@ func _spawn(at: Vector3) -> StairsBody:
 	body.step_ignore_layers = CROWD_LAYER
 	body.step_height = 0.06
 	body.step_down_height = 0.06
+	body.walk_grid = _grid
 	var shape_node: CollisionShape3D = CollisionShape3D.new()
 	var box: BoxShape3D = BoxShape3D.new()
 	box.size = Vector3(0.06, 0.07, 0.18)

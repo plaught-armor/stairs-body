@@ -1,4 +1,5 @@
 #include "stairs_body.h"
+#include "stairs_geometry.h"
 
 #include <godot_cpp/classes/box_shape3d.hpp>
 #include <godot_cpp/classes/capsule_shape3d.hpp>
@@ -43,46 +44,6 @@ std::unordered_map<int64_t, std::vector<uint32_t>> g_grid;
 
 int64_t cell_key(int64_t p_x, int64_t p_z) {
 	return (p_x << 32) ^ (p_z & 0xffffffff);
-}
-
-// Closest points between segments p1-q1 and p2-q2, all with y = 0 (Ericson,
-// Real-Time Collision Detection, 5.1.9).
-void closest_on_segments(const Vector3 &p1, const Vector3 &q1, const Vector3 &p2, const Vector3 &q2, Vector3 &r_c1, Vector3 &r_c2) {
-	const Vector3 d1 = q1 - p1;
-	const Vector3 d2 = q2 - p2;
-	const Vector3 r = p1 - p2;
-	const double a = d1.dot(d1);
-	const double e = d2.dot(d2);
-	const double f = d2.dot(r);
-	double s = 0.0;
-	double t = 0.0;
-	if (a <= 1e-12 && e <= 1e-12) {
-		r_c1 = p1;
-		r_c2 = p2;
-		return;
-	}
-	if (a <= 1e-12) {
-		t = CLAMP(f / e, 0.0, 1.0);
-	} else {
-		const double c = d1.dot(r);
-		if (e <= 1e-12) {
-			s = CLAMP(-c / a, 0.0, 1.0);
-		} else {
-			const double b = d1.dot(d2);
-			const double denom = a * e - b * b;
-			s = denom > 1e-12 ? CLAMP((b * f - c * e) / denom, 0.0, 1.0) : 0.0;
-			t = (b * s + f) / e;
-			if (t < 0.0) {
-				t = 0.0;
-				s = CLAMP(-c / a, 0.0, 1.0);
-			} else if (t > 1.0) {
-				t = 1.0;
-				s = CLAMP((b - c) / a, 0.0, 1.0);
-			}
-		}
-	}
-	r_c1 = p1 + d1 * s;
-	r_c2 = p2 + d2 * t;
 }
 
 } // namespace
@@ -134,20 +95,256 @@ void StairsBody::_record_contact(int p_index) {
 	_contacts.push_back(contact);
 }
 
+void StairsBody::set_walk_grid(StairsWalkGrid *p_grid) {
+	_walk_grid_id = p_grid != nullptr ? p_grid->get_instance_id() : 0;
+}
+
+StairsWalkGrid *StairsBody::get_walk_grid() const {
+	return Object::cast_to<StairsWalkGrid>(ObjectDB::get_instance(_walk_grid_id));
+}
+
+// Walk mode: the move made on the walk grid's boxes, with no physics query, the
+// way crowds in shipped games walk on baked navigation data and use physics only
+// when they must. Taken only on the floor, on a baked box, not rising, with no
+// moving floor, where the grid answers for everything the move can reach, and
+// only if the body's feet are within WALK_ENTRY of the grid's floor; otherwise the
+// move sweeps. A move the grid cannot finish - a drop past the step-down reach,
+// a ceiling met stepping up, the body already inside a box - is undone and swept.
+// Returns whether the move was made.
+bool StairsBody::_walk_on_grid(double p_delta) {
+	StairsWalkGrid *grid = get_walk_grid();
+	_on_grid = false;
+	if (grid == nullptr || !_on_floor || velocity.y > 0.0 || force_stair_step ||
+			_platform_velocity != Vector3() || !UtilityFunctions::is_instance_id_valid(_floor_id)) {
+		return false;
+	}
+	if (!grid->is_baked()) {
+		grid->bake();
+	}
+	if (!grid->bakes(_floor_id)) {
+		return false;
+	}
+	if (!_footprint_known) {
+		_measure_footprint();
+		ERR_FAIL_COND_V_MSG(!_footprint_known, false, "StairsBody has no shapes to walk the grid with.");
+	}
+	const Neighbour foot = _foot_world(get_global_transform());
+	const Vector3 saved_velocity = velocity;
+	const Vector3 saved_pending = _crowd_pending;
+	_contacts.clear();
+	const Vector3 motion = _crowd_solve(velocity * HORIZONTAL_MASK * p_delta) * HORIZONTAL_MASK;
+	const double pad = foot.axis.length() + foot.radius + safe_margin * 4.0;
+	const Vector3 from = foot.centre;
+	const Vector3 to = foot.centre + motion;
+	const double min_x = MIN(from.x, to.x) - pad;
+	const double min_z = MIN(from.z, to.z) - pad;
+	const double max_x = MAX(from.x, to.x) + pad;
+	const double max_z = MAX(from.z, to.z) + pad;
+	_grid_boxes.clear();
+	grid->gather(min_x, min_z, max_x, max_z, _grid_boxes);
+
+	double floor = 0.0;
+	uint32_t floor_box = 0;
+	Vector3 shift;
+	bool hit = false;
+	const bool walked = !grid->unanswered(min_x, min_z, max_x, max_z, foot.bottom - _step_down_reach() - WALK_ENTRY, foot.top + step_height, get_collision_mask()) &&
+			_grid_floor(*grid, foot, Vector3(), floor, floor_box) && std::abs(foot.bottom - floor) <= WALK_ENTRY &&
+			_grid_sweep(*grid, foot, motion, shift, hit) &&
+			_grid_floor(*grid, foot, shift, floor, floor_box) && foot.bottom - floor <= _step_down_reach() + GRID_SLACK;
+	Vector3 normal;
+	Vector3 point;
+	uint32_t box = 0;
+	if (!walked || _grid_nearest(*grid, foot, shift, floor + GRID_SLACK, floor + (foot.top - foot.bottom), normal, box, point) < 0.0) {
+		velocity = saved_velocity;
+		_crowd_pending = saved_pending;
+		_contacts.clear();
+		return false;
+	}
+	_grid_commit(*grid, foot, shift, floor, floor_box, hit);
+	return true;
+}
+
+// Slides the footprint by `motion` past the grid's boxes that stand higher than a
+// step, stopping safe_margin short of each, sliding along it up to max_slides
+// times, and stopping against one met closer to head-on than HEAD_ON, as a
+// grounded slide does. Samples the path at most half a radius apart, so no wall is
+// passed over, then bisects to the last clear point. A body already nearer a box
+// than safe_margin may move but not come nearer. Returns false when the body
+// starts inside such a box.
+bool StairsBody::_grid_sweep(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_motion, Vector3 &r_shift, bool &r_hit) {
+	const double above = p_foot.bottom + step_height + GRID_SLACK;
+	const double below = p_foot.top;
+	Vector3 normal;
+	Vector3 point;
+	uint32_t box = UINT32_MAX;
+	r_shift = Vector3();
+	r_hit = false;
+	double near = _grid_nearest(p_grid, p_foot, r_shift, above, below, normal, box, point);
+	if (near < 0.0) {
+		return false;
+	}
+	Vector3 remaining = p_motion;
+	for (int slide = 0; slide < max_slides && remaining.length_squared() > 1e-12; slide++) {
+		const double least = MIN(safe_margin, near) - 1e-9;
+		const int samples = CLAMP((int)std::ceil(remaining.length() / MAX(p_foot.radius * 0.5, 0.01)), 1, GRID_SAMPLES_MAX);
+		double clear = 0.0;
+		double blocked = -1.0;
+		for (int k = 1; k <= samples; k++) {
+			const double t = double(k) / samples;
+			if (_grid_nearest(p_grid, p_foot, r_shift + remaining * t, above, below, normal, box, point) < least) {
+				blocked = t;
+				break;
+			}
+			clear = t;
+		}
+		if (blocked < 0.0) {
+			r_shift += remaining;
+			return true;
+		}
+		for (int i = 0; i < GRID_BISECTIONS; i++) {
+			const double mid = (clear + blocked) * 0.5;
+			(_grid_nearest(p_grid, p_foot, r_shift + remaining * mid, above, below, normal, box, point) < least ? blocked : clear) = mid;
+		}
+		r_shift += remaining * clear;
+		near = _grid_nearest(p_grid, p_foot, r_shift, above, below, normal, box, point);
+		if (normal == Vector3()) {
+			return true;
+		}
+		r_hit = true;
+		const Vector3 rest = remaining * (1.0 - clear);
+		if (-rest.normalized().dot(normal) > HEAD_ON) {
+			return true;
+		}
+		remaining = rest.slide(normal);
+	}
+	return true;
+}
+
+// The highest top among the grid's boxes under the footprint moved by `shift`
+// that the body can stand on from where it is: no higher than a step above its
+// feet. Returns false when there is none.
+bool StairsBody::_grid_floor(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double &r_floor, uint32_t &r_box) const {
+	const Vector3 a = p_foot.centre + p_shift - p_foot.axis;
+	const Vector3 b = p_foot.centre + p_shift + p_foot.axis;
+	const double reach_up = p_foot.bottom + step_height + GRID_SLACK;
+	const uint32_t mask = get_collision_mask();
+	bool found = false;
+	for (const uint32_t i : _grid_boxes) {
+		const StairsWalkGrid::Box &box = p_grid.box(i);
+		Vector3 normal;
+		Vector3 point;
+		if ((box.layer & mask) == 0 || box.top > reach_up || (found && box.top <= r_floor) ||
+				StairsWalkGrid::gap(box, a, b, p_foot.radius, normal, point) > 0.0) {
+			continue;
+		}
+		r_floor = box.top;
+		r_box = i;
+		found = true;
+	}
+	return found;
+}
+
+// The smallest horizontal gap between the footprint moved by `shift` and the
+// grid's boxes on the body's mask that reach above `above` and below `below`,
+// with the normal from and nearest point of the nearest one, or +inf when there
+// are none.
+double StairsBody::_grid_nearest(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double p_above, double p_below, Vector3 &r_normal, uint32_t &r_box, Vector3 &r_point) const {
+	const Vector3 a = p_foot.centre + p_shift - p_foot.axis;
+	const Vector3 b = p_foot.centre + p_shift + p_foot.axis;
+	const uint32_t mask = get_collision_mask();
+	double nearest = INFINITY;
+	r_normal = Vector3();
+	for (const uint32_t i : _grid_boxes) {
+		const StairsWalkGrid::Box &box = p_grid.box(i);
+		if ((box.layer & mask) == 0 || box.top <= p_above || box.bottom >= p_below) {
+			continue;
+		}
+		Vector3 normal;
+		Vector3 point;
+		const double gap = StairsWalkGrid::gap(box, a, b, p_foot.radius, normal, point);
+		if (gap < nearest) {
+			nearest = gap;
+			r_normal = normal;
+			r_box = i;
+			r_point = point;
+		}
+	}
+	return nearest;
+}
+
+// Puts the body where the grid walk left it and records what it touched, as the
+// sweeps would: the floor box, and when the walk ran into a box standing higher
+// than a step, the nearest such box as a wall. A body left standing by a wall
+// does not touch it, as with the sweeps, which leave it a margin or more away. A
+// step up or down past STEP_DOWN_SIGNAL_MIN is announced.
+void StairsBody::_grid_commit(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double p_floor, uint32_t p_floor_box, bool p_hit) {
+	Transform3D xform = get_global_transform();
+	xform.origin += p_shift;
+	xform.origin.y += p_floor - p_foot.bottom;
+	set_global_transform(xform);
+	_clear_contacts();
+	const StairsWalkGrid::Box &floor_box = p_grid.box(p_floor_box);
+	_on_floor = true;
+	_floor_normal = WORLD_UP;
+	_floor_rid = floor_box.rid;
+	_floor_id = floor_box.id;
+	_platform_velocity = Vector3();
+	const Vector3 centre = p_foot.centre + p_shift;
+	Contact floor_contact;
+	floor_contact.collider_id = floor_box.id;
+	floor_contact.normal = WORLD_UP;
+	floor_contact.position = Vector3(centre.x, p_floor, centre.z);
+	_contacts.push_back(floor_contact);
+	Vector3 wall;
+	Vector3 point;
+	uint32_t wall_box = UINT32_MAX;
+	const double gap = _grid_nearest(p_grid, p_foot, p_shift, p_foot.bottom + step_height + GRID_SLACK, p_foot.top, wall, wall_box, point);
+	if (p_hit && gap <= safe_margin * 2.0 && wall != Vector3()) {
+		_on_wall = true;
+		_wall_normal = wall;
+		Contact wall_contact;
+		wall_contact.collider_id = p_grid.box(wall_box).id;
+		wall_contact.normal = wall;
+		wall_contact.position = Vector3(point.x, p_floor, point.z);
+		_contacts.push_back(wall_contact);
+		if (velocity.dot(wall) < 0.0) {
+			velocity = velocity.slide(wall);
+		}
+	}
+	velocity.y = 0.0;
+	_last_wall = _on_wall ? _wall_normal : Vector3();
+	_rest_valid = false;
+	_settle_reusable = false;
+	_on_grid = true;
+	const double rise = p_floor - p_foot.bottom;
+	if (rise >= STEP_DOWN_SIGNAL_MIN) {
+		emit_signal("stepped_up", rise);
+		emit_signal("stepped", rise);
+	} else if (-rise >= STEP_DOWN_SIGNAL_MIN) {
+		emit_signal("stepped_down", -rise);
+		emit_signal("stepped", rise);
+	}
+	desired_velocity = Vector3();
+	force_stair_step = false;
+}
+
 // Moves the body by velocity for one physics frame, stepping up and down stairs.
 // `time_scale` stretches the frame, for a caller that moves the body less often
 // than every frame: 2 moves it for two frames' worth of time, once.
 void StairsBody::move_and_stair_step(double p_time_scale) {
 	ERR_FAIL_COND_MSG(!(p_time_scale > 0.0), "time_scale must be positive.");
 	_time_scale = p_time_scale;
+	const double delta = get_physics_process_delta_time() * p_time_scale;
 	const bool overlapping = _crowd_gather();
 	if (!overlapping && _resting()) {
 		velocity.y = 0.0;
 		return;
 	}
+	if (_walk_on_grid(delta)) {
+		return;
+	}
 	const bool still = _still() && !overlapping;
 	_params->set_margin(safe_margin);
-	const double delta = get_physics_process_delta_time() * p_time_scale;
 	const bool was_on_floor = _on_floor;
 	_contacts.clear();
 	if (was_on_floor) {
@@ -238,7 +435,7 @@ void StairsBody::_notification(int p_what) {
 // that builds a mesh through the RenderingServer, and a body's first move then
 // waited on the GPU, 0.5-3.6 ms a body while a wave of them spawned. Returns false
 // for a shape with no finite bounds, which the footprint leaves out.
-static bool shape_bounds(const Ref<Shape3D> &p_shape, AABB &r_bounds) {
+bool godot::shape_bounds(const Ref<Shape3D> &p_shape, AABB &r_bounds) {
 	if (const BoxShape3D *box = Object::cast_to<BoxShape3D>(p_shape.ptr())) {
 		r_bounds = AABB(-box->get_size() * 0.5, box->get_size());
 		return true;
@@ -1444,6 +1641,10 @@ Vector3 StairsBody::get_contact_position(int p_index) const {
 void StairsBody::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("move_and_stair_step", "time_scale"), &StairsBody::move_and_stair_step, DEFVAL(1.0));
 	ClassDB::bind_static_method("StairsBody", D_METHOD("is_step_surface", "body", "ignore_layers"), &StairsBody::is_step_surface, DEFVAL(0));
+	ClassDB::bind_method(D_METHOD("is_on_walk_grid"), &StairsBody::is_on_walk_grid);
+	ClassDB::bind_method(D_METHOD("set_walk_grid", "grid"), &StairsBody::set_walk_grid);
+	ClassDB::bind_method(D_METHOD("get_walk_grid"), &StairsBody::get_walk_grid);
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "walk_grid", PROPERTY_HINT_NODE_TYPE, "StairsWalkGrid"), "set_walk_grid", "get_walk_grid");
 	ClassDB::bind_method(D_METHOD("is_on_floor"), &StairsBody::is_on_floor);
 	ClassDB::bind_method(D_METHOD("is_on_wall"), &StairsBody::is_on_wall);
 	ClassDB::bind_method(D_METHOD("is_on_ceiling"), &StairsBody::is_on_ceiling);

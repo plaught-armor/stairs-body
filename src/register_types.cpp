@@ -5,6 +5,7 @@
 #include <godot_cpp/godot.hpp>
 
 #include "stairs_body.h"
+#include "stairs_walk_grid.h"
 
 using namespace godot;
 
@@ -13,6 +14,7 @@ static void initialize_stairs_body(ModuleInitializationLevel p_level) {
 		return;
 	}
 	GDREGISTER_CLASS(StairsBody);
+	GDREGISTER_CLASS(StairsWalkGrid);
 }
 
 static void uninitialize_stairs_body(ModuleInitializationLevel p_level) {

@@ -31,6 +31,8 @@
 #include <godot_cpp/variant/transform3d.hpp>
 #include <godot_cpp/variant/vector3.hpp>
 
+#include "stairs_walk_grid.h"
+
 #include <utility>
 #include <vector>
 
@@ -76,6 +78,15 @@ private:
 	// How far a grounded body may move on a static floor, sweeping into nothing,
 	// before the post-move test runs again; see _settle_reused.
 	static constexpr double SETTLE_REACH = 0.01;
+	// How far a body's feet may be from the walk grid's floor for the grid to take
+	// the move. Under STEP_DOWN_SIGNAL_MIN, so taking a body onto the grid never
+	// announces a step.
+	static constexpr double WALK_ENTRY = 0.005;
+	// Height slack on the grid's step, floor and ceiling tests.
+	static constexpr double GRID_SLACK = 1e-4;
+	// Most path samples, and bisections to the last clear point, of one grid slide.
+	static constexpr int GRID_SAMPLES_MAX = 64;
+	static constexpr int GRID_BISECTIONS = 12;
 	// Cosine above which the step probe counts as along the motion rather than off it.
 	static constexpr double PARALLEL = 0.9999;
 	// Cosine of 15 degrees, CharacterBody3D's default wall_min_slide_angle: a grounded
@@ -221,12 +232,24 @@ private:
 	Transform3D _settle_floor_transform;
 	LocalVector<Contact> _settle_contacts;
 
+	// Walk mode: the StairsWalkGrid this body walks on while it can, by instance id,
+	// and whether the last move walked on it rather than sweeping. See _walk_on_grid.
+	uint64_t _walk_grid_id = 0;
+	bool _on_grid = false;
+	// The grid's boxes near this move, gathered once per move.
+	LocalVector<uint32_t> _grid_boxes;
+
 	// Where a successful step left the body, and how far it rose. Written by _step_sweeps;
 	// the rise is announced once the move is final, since a re-slide can redo the step.
 	Transform3D _step_to;
 	double _step_rise = 0.0;
 
 	void _clear_contacts();
+	bool _walk_on_grid(double p_delta);
+	bool _grid_sweep(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_motion, Vector3 &r_shift, bool &r_hit);
+	bool _grid_floor(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double &r_floor, uint32_t &r_box) const;
+	double _grid_nearest(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double p_above, double p_below, Vector3 &r_normal, uint32_t &r_box, Vector3 &r_point) const;
+	void _grid_commit(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double p_floor, uint32_t p_floor_box, bool p_hit);
 	void _measure_footprint();
 	static void _crowd_frame();
 	static double _foot_gap(const Neighbour &p_a, const Vector3 &p_a_shift, const Neighbour &p_b, const Vector3 &p_b_shift, Vector3 &r_normal);
@@ -281,6 +304,9 @@ public:
 	StairsBody();
 
 	void move_and_stair_step(double p_time_scale = 1.0);
+	void set_walk_grid(StairsWalkGrid *p_grid);
+	StairsWalkGrid *get_walk_grid() const;
+	bool is_on_walk_grid() const { return _on_grid; }
 	static bool is_step_surface(const RID &p_body, uint32_t p_ignore_layers = 0);
 
 	bool is_on_floor() const { return _on_floor; }

@@ -12,15 +12,26 @@ extends Node3D
 ## in a state it never occupies while walking - the forward sweep hits there and
 ## misses when driven, so the tight loop prices a branch the game does not take.
 ## Driving real frames and timing only the calls is what is left.
+##
+##     godot --headless --path <repo root> res://test/bench_frame.tscn -- --grid
+##
+## walks the characters on a StairsWalkGrid over the level instead, and prints
+## the share of timed moves made on it.
 
 const CHARACTERS: int = 200
 const FRAMES: int = 200
 const SETTLE: int = 30
 const WALK: float = 3.0
 const LANE: float = 3.0
+const RISE: float = 0.2
+const TREAD: float = 0.3
+const TREADS: int = 40
+const FLIGHT_START: float = 152.0
 
 var _flat: Array[StairsBody] = []
 var _wall: Array[StairsBody] = []
+var _flight: Array[StairsBody] = []
+var _grid: StairsWalkGrid = StairsWalkGrid.new() if OS.get_cmdline_user_args().has("--grid") else null
 
 
 func _ready() -> void:
@@ -47,6 +58,7 @@ func _character(at: Vector3) -> StairsBody:
 	cyl.margin = 0.001
 	shape_node.shape = cyl
 	c.add_child(shape_node)
+	c.walk_grid = _grid
 	add_child(c)
 	c.global_position = at
 	return c
@@ -68,15 +80,22 @@ func _measure(label: String, group: Array[StairsBody], walk: Vector3) -> void:
 		await get_tree().physics_frame
 
 	var total: int = 0
+	var on_grid: int = 0
 	for _i: int in FRAMES:
 		var started: int = Time.get_ticks_usec()
 		_step(group, walk)
 		total += Time.get_ticks_usec() - started
+		for c: StairsBody in group:
+			on_grid += int(c.is_on_walk_grid())
 		await get_tree().physics_frame
 
 	print(
-		"%-26s %7.2f us per character per frame"
-		% [label, float(total) / (FRAMES * CHARACTERS)]
+		"%-26s %7.2f us per character per frame, %3.0f%% on the grid"
+		% [
+			label,
+			float(total) / (FRAMES * CHARACTERS),
+			100.0 * float(on_grid) / float(FRAMES * CHARACTERS),
+		]
 	)
 
 
@@ -100,6 +119,19 @@ func _run() -> void:
 	for i: int in CHARACTERS:
 		_wall.append(_character(Vector3(101.0, 0.9, _lane_z(i))))
 
+	# A long flight the characters climb all through the timed frames.
+	for i: int in TREADS:
+		var top: float = RISE * float(i + 1)
+		_box(
+			Vector3(TREAD, top, span),
+			Vector3(FLIGHT_START + TREAD * (float(i) + 0.5), top * 0.5, 0.0),
+		)
+	for i: int in CHARACTERS:
+		_flight.append(_character(Vector3(FLIGHT_START - 3.0, 0.9, _lane_z(i))))
+	if _grid != null:
+		add_child(_grid)
+
 	await _measure("walking, flat ground", _flat, Vector3(WALK, 0, 0))
 	await _measure("pressed into a tall wall", _wall, Vector3(WALK, 0, 0))
+	await _measure("climbing a flight", _flight, Vector3(WALK, 0, 0))
 	get_tree().quit()
