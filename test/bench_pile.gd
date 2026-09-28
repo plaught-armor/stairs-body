@@ -1,6 +1,6 @@
 extends Node3D
 
-## A crowd pressed together: a game's body pile, the case where every sweep pays
+## A crowd pressed together: a pile of bodies, the case where every sweep pays
 ## to push out of the neighbours the body overlaps.
 ##
 ##     godot --headless --path <repo root> res://test/bench_pile.tscn

@@ -91,8 +91,8 @@ private:
 	// Overlap between crowd footprints that separation leaves alone, in metres; deeper
 	// overlap is still pushed all the way back to touching. Box2D's b2_linearSlop, 5 mm,
 	// for the same reason: resolved to touching every frame, a still pile was nudged
-	// forever and its bodies almost never rested (4-7% of still samples in a game's
-	// 96-body pile, 63-69% with the slop). Pushing deep overlap only back to the slop
+	// forever and its bodies almost never rested (4-7% of still samples in a
+	// pile of 96, 63-69% with the slop). Pushing deep overlap only back to the slop
 	// instead held pairs 5 mm in for many frames and rested only 17-27%.
 	static constexpr double CROWD_SLOP = 0.005;
 

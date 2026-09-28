@@ -338,10 +338,10 @@ out of the sweeps. Put the crowd on its own layer, leave that layer out of each
 member's `collision_mask`, and set `crowd_layers` to it:
 
 ```gdscript
-body.collision_layer = CROWD
-body.collision_mask = WORLD           # not CROWD
-body.crowd_layers = CROWD
-body.step_ignore_layers = CROWD
+member.collision_layer = CROWD
+member.collision_mask = WORLD           # not CROWD
+member.crowd_layers = CROWD
+member.step_ignore_layers = CROWD
 ```
 
 Members then keep apart by geometry the way crowd libraries do (DetourCrowd,
@@ -371,7 +371,7 @@ What changes:
 - Footprints may overlap by up to 5 mm, the slop, and separation leaves that alone,
   as Box2D's contact solver does. Pushed back to touching every frame, a still pile
   was nudged forever and its members almost never rested; with the slop, about two
-  thirds of still members in a game's 96-body pile rest.
+  thirds of still members in a pile of 96 rest.
 - The footprint is a capsule. A box's corners stick out of it, so box-shaped
   members can overlap corner to corner, by up to about 40% of their width: 8-12 mm
   on average and about 25 mm at worst in that pile of 60 mm wide bodies.

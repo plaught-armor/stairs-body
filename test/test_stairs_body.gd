@@ -483,7 +483,7 @@ func _case_b11_a_frozen_crate_is_stepped_onto() -> void:
 ## steep normal a few millimetres down. Measured before _probe_off_corner, with
 ## a game's player cylinder: airborne on 3 of 16 treads at walk speed, falling
 ## across them. Where a rim meets an edge is chaotic in speed and radius, so the
-## lanes are a game's four speeds with its player's collider. Without the fix the
+## lanes are that game's four speeds with its player's collider. Without the fix the
 ## three slower lanes fail; the sprint lane never meets a curve and is a control.
 ## A shift of one margin instead of the curve's depth fails the same three. Godot
 ## Physics has square edges, and passes without the fix.
@@ -543,7 +543,7 @@ func _case_b12_a_walk_down_a_flight_steps_every_tread() -> void:
 	world.queue_free()
 
 
-## a game's player collider: origin at the feet, which is where it is measured.
+## A game's player collider: origin at the feet, which is where it is measured.
 func _add_player_body(world: Node3D, at: Vector3) -> StairsBody:
 	var c: StairsBody = StairsBody.new()
 	c.step_down_height = 0.5
@@ -563,8 +563,8 @@ func _add_player_body(world: Node3D, at: Vector3) -> StairsBody:
 ## A body on a step_ignore_layers layer lying on a kerb's top. The step sweeps run
 ## with that layer out of the mask, so the down leg lands on the kerb through it;
 ## without the masking it lands on the ignored body and is refused. The ignored body
-## is loose, as a body is in a game. Past the kerb's edge the slab still blocks the
-## body, as a body would, so only the climb is asserted.
+## is loose, as a crowd member is. Past the kerb's edge the slab still blocks the
+## body, as a crowd member would, so only the climb is asserted.
 func _case_b13_a_step_lands_through_an_ignored_body() -> void:
 	const IGNORED_LAYER: int = 2
 	const SLAB: Vector3 = Vector3(0.6, 0.05, 1.0)
@@ -786,7 +786,7 @@ func _ride_a_teleported_body(ignore: bool) -> PackedFloat64Array:
 
 ## A teleported kinematic body reports the jump as velocity, so standing on one
 ## would carry the rider at that speed - measured 12 m/s here, on both engines,
-## and 26-67 m/s in a game's body crowds. A floor on step_ignore_layers holds the
+## and 26-67 m/s in a game's crowds. A floor on step_ignore_layers holds the
 ## rider up without carrying it: both halves are checked, since a rider that fell
 ## through to the ground would read no platform speed either. The control proves
 ## the teleport is seen at all.
@@ -806,7 +806,7 @@ func _case_b18_a_floor_on_an_ignored_layer_is_never_ridden() -> void:
 	)
 
 
-## a game's player running a flight: a 0.27 x 1.75 m cylinder at 3.83 m/s up
+## A game's player running a flight: a 0.27 x 1.75 m cylinder at 3.83 m/s up
 ## 0.25 m rises on 0.5 m goings. Under Jolt, whose box edges are rounded by their
 ## margin, a step can land with only the rim over the nosing and read a tilted
 ## normal; followed as a slope, it lifted the body and the probe dropped it back,
@@ -857,11 +857,11 @@ func _case_b19_a_step_up_is_never_followed_by_a_false_step_down() -> void:
 	world.queue_free()
 
 
-## a game's flight: each tread is one box from its nosing to the end of the run.
+## A game's flight: each tread is one box from its nosing to the end of the run.
 ## A step can land with only 20 mm of rim over a nosing, sitting 5 mm down Jolt's
 ## rounded edge. A landing that recorded a level floor there sent the next move
 ## into the curve, whose 28 degree normal the slide turned the velocity along: a
-## 1.6 m/s launch, 42 of 170 ticks in the air in a game.
+## 1.6 m/s launch, 42 of 170 ticks in the air in that game.
 func _case_b20_a_step_onto_a_rounded_nosing_never_launches_the_body() -> void:
 	const RISE: float = 0.25
 	const GOING: float = 0.5
@@ -1014,9 +1014,9 @@ func _case_b22_a_resting_body_wakes_when_its_floor_or_place_changes() -> void:
 
 
 ## A resting body skips its checks, and something moved into it has to reach its
-## contact list anyway: a game's bodies are shoved by what their owner reads there.
-## Here a kinematic body is teleported into it; in a game it is a walker that
-## leaves the bodies' layer out of its own mask. Without the wake the list kept the
+## contact list anyway: a game may shove its crowd by what their owner reads there.
+## Here a kinematic body is teleported into it; in the game it is a walker that
+## leaves the crowd's layer out of its own mask. Without the wake the list kept the
 ## floor alone, and the body was never shoved.
 func _case_b25_a_resting_body_lists_what_moves_into_it() -> void:
 	const REST: int = 20
@@ -1173,7 +1173,7 @@ func _case_b26_a_crowd_member_freed_or_added_mid_frame_is_skipped() -> void:
 ## A resting body touched only by StairsBody neighbours that collide with it stays
 ## at rest: they stop at its surface, so a pile of still bodies does not wake itself
 ## every frame. A StairsBody that leaves the body's layer out of its mask walks into
-## it, and has to wake it, so that the body lists it: a game shoves bodies that way.
+## it, and has to wake it, so that the body lists it: a game may shove a crowd that way.
 func _case_b27_a_resting_body_wakes_only_for_a_walker_that_can_enter_it() -> void:
 	const REST: int = 20
 	const TICKS: int = 20
@@ -1184,7 +1184,7 @@ func _case_b27_a_resting_body_wakes_only_for_a_walker_that_can_enter_it() -> voi
 	var world: Node3D = _new_world()
 	_add_box(world, Vector3(8.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
 	# c and its neighbour on a layer of their own, colliding with each other; the
-	# walker leaves that layer out of its mask, as a game's shoving walker does.
+	# walker leaves that layer out of its mask, as a shoving walker does.
 	var c: StairsBody = StairsBody.new()
 	c.collision_layer = PILE_LAYER
 	c.collision_mask = 1 | PILE_LAYER | WALKER_LAYER

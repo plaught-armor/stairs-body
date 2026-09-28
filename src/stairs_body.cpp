@@ -515,7 +515,7 @@ bool StairsBody::_resting() {
 // a shape query: cheaper than the contact test it guards, since it collects no
 // contacts and does no depenetration. Something moved into a resting body, such as
 // a walker that leaves the body's layer out of its own mask, has to reach the
-// contact list, where the body's owner reads it: a game's bodies are shoved that
+// contact list, where the body's owner reads it: a game may shove its crowd that
 // way. Static bodies, StairsBody nodes that collide with this one and its crowd
 // neighbours are passed over; a StairsBody teleported into it by its owner is too.
 bool StairsBody::_touched_by_mover() {
