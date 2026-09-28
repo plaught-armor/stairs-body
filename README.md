@@ -134,11 +134,15 @@ left the body, and only a move updates them. After moving the body any other way
 
 A body at rest skips its checks. With no velocity and no `desired_velocity`, on a
 static floor that carries it nowhere, it makes one cheap shape query per move in
-place of them, while neither it nor its floor has moved and nothing but static
-bodies touches it, and the getters keep the last move's answers. It checks again
-once it is given velocity or intent, is moved, its floor moves or is freed, or
-something that is not static touches it. A change to its own shapes, such as a
-crouch, or a floor that stops colliding, is not seen until then. Velocity has to be
+place of them, while neither it nor its floor has moved and nothing that could
+move into it touches it, and the getters keep the last move's answers. It checks
+again once it is given velocity or intent, is moved, its floor moves or is freed,
+or something that is not static touches it. Two kinds of toucher are passed over,
+since neither can move into it: a StairsBody that collides with it, which stops at
+its surface, and a crowd neighbour. So a still body in a pile of StairsBody nodes
+stays at rest while others press on it, and does not list them. A change to its own
+shapes, such as a crouch, a floor that stops colliding, or a StairsBody teleported
+into it, is not seen until then. Velocity has to be
 exactly zero, so snap one that decays toward zero.
 
 `desired_velocity` is where the controller wants to go this frame. It lets the body

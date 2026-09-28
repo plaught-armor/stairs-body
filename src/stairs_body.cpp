@@ -508,11 +508,13 @@ bool StairsBody::_resting() {
 	return _rest_valid;
 }
 
-// Whether anything that is not static overlaps or touches the body, by a shape
-// query: cheaper than the contact test it guards, since it collects no contacts
-// and does no depenetration. Something moved into a resting body, such as a walker
-// that leaves the body's layer out of its own mask, has to reach the contact list,
-// where the body's owner reads it: a game's bodies are shoved that way.
+// Whether anything that could have moved into the body overlaps or touches it, by
+// a shape query: cheaper than the contact test it guards, since it collects no
+// contacts and does no depenetration. Something moved into a resting body, such as
+// a walker that leaves the body's layer out of its own mask, has to reach the
+// contact list, where the body's owner reads it: a game's bodies are shoved that
+// way. Static bodies, StairsBody nodes that collide with this one and its crowd
+// neighbours are passed over; a StairsBody teleported into it by its owner is too.
 bool StairsBody::_touched_by_mover() {
 	const Ref<World3D> world = get_world_3d();
 	if (world.is_null()) {
@@ -540,10 +542,20 @@ bool StairsBody::_touched_by_mover() {
 			_cast_params->set_transform(at);
 			const TypedArray<Dictionary> hits = space->intersect_shape(_cast_params, REST_QUERY_MAX);
 			for (int64_t h = 0; h < hits.size(); h++) {
-				const RID rid = Dictionary(hits[h])["rid"];
-				if (physics()->body_get_mode(rid) != PhysicsServer3D::BODY_MODE_STATIC) {
-					return true;
+				const Dictionary hit = hits[h];
+				if (physics()->body_get_mode(RID(hit["rid"])) == PhysicsServer3D::BODY_MODE_STATIC) {
+					continue;
 				}
+				// A StairsBody that collides with this one sweeps against it and stops at
+				// its surface, and a crowd neighbour is kept out by crowd separation: neither
+				// can move into it. In a pile, still bodies always touch moving neighbours,
+				// and waking for those cost more than resting saved.
+				const StairsBody *other = Object::cast_to<StairsBody>(Object::cast_to<Object>(hit["collider"]));
+				if (other != nullptr && ((other->get_collision_mask() & get_collision_layer()) != 0 ||
+												((crowd_layers & other->get_collision_layer()) != 0 && (other->crowd_layers & get_collision_layer()) != 0))) {
+					continue;
+				}
+				return true;
 			}
 		}
 	}

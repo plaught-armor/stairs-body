@@ -60,6 +60,7 @@ func _run_all() -> void:
 	await _case_b23_crowd_bodies_walking_head_on_stop_touching()
 	await _case_b24_a_crowd_push_never_shoves_a_body_into_a_wall()
 	await _case_b26_a_crowd_member_freed_or_added_mid_frame_is_skipped()
+	await _case_b27_a_resting_body_wakes_only_for_a_walker_that_can_enter_it()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -1162,6 +1163,67 @@ func _case_b26_a_crowd_member_freed_or_added_mid_frame_is_skipped() -> void:
 		"b26 a crowd member freed or added mid-frame is skipped",
 		counter.errors == 0 and absf(apart - 2.0 * BODY_RADIUS) < CROWD_TOLERANCE,
 		"%d engine errors, %.4f m apart expected %.2f" % [counter.errors, apart, 2.0 * BODY_RADIUS],
+	)
+	world.queue_free()
+
+
+## A resting body touched only by StairsBody neighbours that collide with it stays
+## at rest: they stop at its surface, so a pile of still bodies does not wake itself
+## every frame. A StairsBody that leaves the body's layer out of its mask walks into
+## it, and has to wake it, so that the body lists it: a game shoves bodies that way.
+func _case_b27_a_resting_body_wakes_only_for_a_walker_that_can_enter_it() -> void:
+	const REST: int = 20
+	const TICKS: int = 20
+	const SPEED: float = 1.0
+	const PILE_LAYER: int = 2
+	const WALKER_LAYER: int = 64
+	const GAP: float = 0.1
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(8.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	# c and its neighbour on a layer of their own, colliding with each other; the
+	# walker leaves that layer out of its mask, as a game's shoving walker does.
+	var c: StairsBody = StairsBody.new()
+	c.collision_layer = PILE_LAYER
+	c.collision_mask = 1 | PILE_LAYER | WALKER_LAYER
+	_add_body(world, Vector3(0.0, REST_Y, 0.0), c)
+	var neighbour: StairsBody = StairsBody.new()
+	neighbour.collision_layer = PILE_LAYER
+	neighbour.collision_mask = 1 | PILE_LAYER
+	_add_body(world, Vector3(-2.0 * BODY_RADIUS - GAP, REST_Y, 0.0), neighbour)
+	await _hold_still(c, REST)
+	var rested_contacts: int = c.get_contact_count()
+	# The colliding neighbour presses into c: c stays at rest, so its contacts are
+	# still the ones it came to rest with.
+	for _i: int in TICKS:
+		await get_tree().physics_frame
+		neighbour.velocity = Vector3(SPEED, neighbour.velocity.y - GRAVITY * DELTA, 0.0)
+		neighbour.desired_velocity = Vector3(SPEED, 0.0, 0.0)
+		neighbour.move_and_stair_step()
+		c.velocity = Vector3(0.0, c.velocity.y - GRAVITY * DELTA, 0.0)
+		c.move_and_stair_step()
+	var kept_rest: bool = (
+		c.get_contact_count() == rested_contacts and _find_contact(c, neighbour, Vector3.RIGHT) < 0
+	)
+
+	var walker: StairsBody = StairsBody.new()
+	walker.collision_layer = WALKER_LAYER
+	walker.collision_mask = 1
+	_add_body(world, Vector3(2.0, REST_Y, 0.0), walker)
+	for _i: int in TICKS * 3:
+		await get_tree().physics_frame
+		walker.velocity = Vector3(-SPEED * 3.0, walker.velocity.y - GRAVITY * DELTA, 0.0)
+		walker.desired_velocity = Vector3(-SPEED * 3.0, 0.0, 0.0)
+		walker.move_and_stair_step()
+		c.velocity = Vector3(0.0, c.velocity.y - GRAVITY * DELTA, 0.0)
+		c.move_and_stair_step()
+		if _find_contact(c, walker, Vector3.LEFT) >= 0:
+			break
+	var listed: int = _find_contact(c, walker, Vector3.LEFT)
+
+	_check(
+		"b27 a resting body wakes only for a walker that can enter it",
+		kept_rest and listed >= 0,
+		"kept rest %s, walker listed at %d" % [kept_rest, listed],
 	)
 	world.queue_free()
 
