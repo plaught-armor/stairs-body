@@ -7,11 +7,11 @@
 		Kinematic character body with stair stepping built into its own move, rather than wrapped around [method CharacterBody3D.move_and_slide]. A frame pays for one set of sweeps instead of the slide's plus the step check's.
 		Replaces [method CharacterBody3D.move_and_slide] entirely, so none of [CharacterBody3D]'s API exists here. The getters keep its names where no native method is in the way. Set [member velocity], optionally [member desired_velocity], then call [method move_and_stair_step] from [method Node._physics_process].
 		The floor, wall and ceiling getters, the platform velocity and the contact list describe where the last [method move_and_stair_step] left the body, and only a move updates them. After moving the body any other way (setting its transform, reparenting it, carrying it without moves), call [method move_and_stair_step] before reading them.
-		A body at rest skips its checks: with no [member velocity] and no [member desired_velocity], on a static floor that carries it nowhere, it makes no queries while neither it nor its floor has moved, and the getters keep the last move's answers. Anything that changes without moving either one, such as another body moving into it or a change to its own shapes, is not seen until it moves or is moved. [member velocity] has to be exactly zero.
+		A body at rest skips its checks: with no [member velocity] and no [member desired_velocity], on a static floor that carries it nowhere, it makes one shape query per move in their place while neither it nor its floor has moved and nothing but static bodies touches it, and the getters keep the last move's answers. A change to its own shapes, such as a crouch, is not seen until it moves or is moved. [member velocity] has to be exactly zero.
 		Physics queries per frame, the budget this class is built around:
 		[codeblock lang=text]
 		walking on flat ground   2   (the move sweep, the contact test)
-		standing still           0   (once at rest, on a static floor)
+		standing still           1   (a shape query, once at rest on a static floor)
 		pressed into a wall      2   (the same two; the step attempt is cached)
 		intent off the motion   +1   (a sweep along intent, which only looks for a step)
 		climbing a step          5   (move sweep, up, forward, down, contact test)

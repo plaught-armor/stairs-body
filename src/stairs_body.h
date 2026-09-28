@@ -74,6 +74,10 @@ private:
 	// Cosine of 15 degrees, CharacterBody3D's default wall_min_slide_angle: a grounded
 	// slide stops against a wall met closer to head-on than this.
 	static constexpr double HEAD_ON = 0.9659258262890683;
+	// Bodies the resting check's shape query lists before giving up. A resting body
+	// touches its floor and perhaps a wall or two; a mover among more than this many
+	// static contacts goes unseen until the body moves.
+	static constexpr int REST_QUERY_MAX = 8;
 
 	// One contact the last move met; see _record_contact for which ones count.
 	struct Contact {
@@ -135,6 +139,7 @@ private:
 	void _clear_contacts();
 	bool _still() const;
 	bool _resting();
+	bool _touched_by_mover();
 	void _mark_rest(bool p_still);
 	double _step_down_reach() const;
 	Vector3 _intended_motion(bool p_was_on_floor, double p_delta) const;

@@ -8,6 +8,7 @@
 #include <godot_cpp/classes/world3d.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/math.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/packed_float32_array.hpp>
 #include <godot_cpp/variant/packed_int32_array.hpp>
 #include <godot_cpp/variant/typed_array.hpp>
@@ -145,27 +146,69 @@ bool StairsBody::_still() const {
 }
 
 // Whether this move can be skipped. Still, from where the last move left it, on
-// the same static floor, unmoved, the move would redo that move's checks and find
-// what they found: 3.3 us on Jolt and 6.6 on Godot Physics for a box-shaped body,
-// nearly all the contact test. The getters keep the last move's answers, so a body
-// that something else moves into, or whose floor stops colliding without moving,
-// is not told until it moves or is moved.
+// the same static floor, unmoved, and touched by nothing but static bodies, the
+// move would redo that move's checks and find what they found. The getters keep
+// the last move's answers, so a floor that stops colliding without moving is not
+// seen until the body moves or is moved.
 bool StairsBody::_resting() {
 	if (!_rest_valid || !_still()) {
 		return false;
 	}
 	_rest_valid = get_global_transform() == _rest_transform &&
 			UtilityFunctions::is_instance_id_valid(_floor_id) &&
-			Transform3D(physics()->body_get_state(_floor_rid, PhysicsServer3D::BODY_STATE_TRANSFORM)) == _rest_floor_transform;
+			Transform3D(physics()->body_get_state(_floor_rid, PhysicsServer3D::BODY_STATE_TRANSFORM)) == _rest_floor_transform &&
+			!_touched_by_mover();
 	return _rest_valid;
 }
 
-// After a full move: a still body on a static floor that carries it nowhere may
-// skip the next one. A conveyor is static and does carry, and a floor on
+// Whether anything that is not static overlaps or touches the body, by a shape
+// query: cheaper than the contact test it guards, since it collects no contacts
+// and does no depenetration. Something moved into a resting body, such as a walker
+// that leaves the body's layer out of its own mask, has to reach the contact list,
+// where the body's owner reads it: a game's bodies are shoved that way.
+bool StairsBody::_touched_by_mover() {
+	const Ref<World3D> world = get_world_3d();
+	if (world.is_null()) {
+		return false;
+	}
+	PhysicsDirectSpaceState3D *space = world->get_direct_space_state();
+	ERR_FAIL_NULL_V_MSG(space, true, "Space state is inaccessible; a still body keeps checking.");
+	TypedArray<RID> exclude;
+	exclude.push_back(get_rid());
+	_cast_params->set_motion(Vector3());
+	_cast_params->set_margin(safe_margin);
+	_cast_params->set_collision_mask(get_collision_mask());
+	_cast_params->set_exclude(exclude);
+	const Transform3D xform = get_global_transform();
+	const PackedInt32Array owners = get_shape_owners();
+	for (int64_t k = 0; k < owners.size(); k++) {
+		const uint32_t owner_id = owners[k];
+		if (is_shape_owner_disabled(owner_id)) {
+			continue;
+		}
+		const Transform3D at = xform * shape_owner_get_transform(owner_id);
+		const int shape_count = shape_owner_get_shape_count(owner_id);
+		for (int i = 0; i < shape_count; i++) {
+			_cast_params->set_shape(shape_owner_get_shape(owner_id, i));
+			_cast_params->set_transform(at);
+			const TypedArray<Dictionary> hits = space->intersect_shape(_cast_params, REST_QUERY_MAX);
+			for (int64_t h = 0; h < hits.size(); h++) {
+				const RID rid = Dictionary(hits[h])["rid"];
+				if (physics()->body_get_mode(rid) != PhysicsServer3D::BODY_MODE_STATIC) {
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
+
+// After a full move: a still body on a static floor that carries it nowhere, and
+// touched by nothing that moves, may skip the next one. A conveyor is static and does carry, and a floor on
 // step_ignore_layers has no RID kept, since it may move under the body.
 void StairsBody::_mark_rest(bool p_still) {
 	_rest_valid = p_still && _on_floor && _floor_rid.is_valid() && _platform_velocity == Vector3() &&
-			physics()->body_get_mode(_floor_rid) == PhysicsServer3D::BODY_MODE_STATIC;
+			physics()->body_get_mode(_floor_rid) == PhysicsServer3D::BODY_MODE_STATIC && !_touched_by_mover();
 	if (!_rest_valid) {
 		return;
 	}

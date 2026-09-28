@@ -52,6 +52,7 @@ func _run_all() -> void:
 	await _case_b20_a_step_onto_a_rounded_nosing_never_launches_the_body()
 	await _case_b21_standing_on_an_ignored_body_stays_on_the_floor()
 	await _case_b22_a_resting_body_wakes_when_its_floor_or_place_changes()
+	await _case_b25_a_resting_body_lists_what_moves_into_it()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -997,6 +998,40 @@ func _case_b22_a_resting_body_wakes_when_its_floor_or_place_changes() -> void:
 			+ " fell once a floor at the identity was freed=%s, %d engine errors"
 		)
 		% [followed_y, REST_Y - DROP, lifted_on_floor, fell, counter.errors],
+	)
+	world.queue_free()
+
+
+## A resting body skips its checks, and something moved into it has to reach its
+## contact list anyway: a game's bodies are shoved by what their owner reads there.
+## Here a kinematic body is teleported into it; in a game it is a walker that
+## leaves the bodies' layer out of its own mask. Without the wake the list kept the
+## floor alone, and the body was never shoved.
+func _case_b25_a_resting_body_lists_what_moves_into_it() -> void:
+	const REST: int = 20
+	const OVERLAP: float = 0.05
+	const SIDE: float = 0.4
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(8.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	var c: StairsBody = _add_body(world, Vector3(0.0, REST_Y, 0.0))
+	var walker: AnimatableBody3D = AnimatableBody3D.new()
+	walker.sync_to_physics = false
+	var walker_shape: CollisionShape3D = CollisionShape3D.new()
+	var walker_box: BoxShape3D = BoxShape3D.new()
+	walker_box.size = Vector3(SIDE, SIDE, SIDE)
+	walker_shape.shape = walker_box
+	walker.add_child(walker_shape)
+	world.add_child(walker)
+	walker.global_position = Vector3(3.0, SIDE * 0.5, 0.0)
+	await _hold_still(c, REST)
+	walker.global_position = Vector3(BODY_RADIUS + SIDE * 0.5 - OVERLAP, SIDE * 0.5, 0.0)
+	await _hold_still(c, 2)
+	var listed: int = _find_contact(c, walker, Vector3.LEFT)
+
+	_check(
+		"b25 a resting body lists what moves into it",
+		listed >= 0,
+		"walker listed at %d of %d contacts" % [listed, c.get_contact_count()],
 	)
 	world.queue_free()
 

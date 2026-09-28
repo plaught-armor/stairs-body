@@ -40,7 +40,7 @@ not have helped much. The only way to get cheaper was to run fewer queries.
 | Situation | Queries per frame |
 |---|---|
 | Walking on flat ground | 2 (the move sweep, the contact test) |
-| Standing still on a static floor | 0 once at rest (see below) |
+| Standing still on a static floor | 1 shape query once at rest (see below) |
 | Pressed into a wall | 2 (the refused step is cached) |
 | Intent off the motion | +1 (a sweep along intent that only looks for a step) |
 | Climbing a step | 5 (move, up, forward, down, contact test) |
@@ -71,9 +71,9 @@ crowd's own layer in `step_ignore_layers` and the checks that only look for step
 and floor skip that. A neighbour the move meets is not tried as a step either,
 unless something stands behind it at floor height. `test/bench_pile.gd`, 96
 box-shaped bodies pressed into a pile, runs at about 32 µs per body under Jolt and 48
-under Godot Physics. The same bodies standing still apart (`-- --idle`) cost under
-1 µs each, the caller's own script included, against 3.7 and 7.2 before a body at
-rest skipped its checks.
+under Godot Physics. The same bodies standing still apart (`-- --idle`) cost 2.4 and
+2.6 µs each, the caller's own script included, against 3.7 and 7.2 before a body at
+rest skipped its contact test.
 
 Both GDScript classes, and the benchmarks and diagnostics written for
 `StairsCharacter`, are kept at the git tag `gdscript-final`.
@@ -133,12 +133,13 @@ left the body, and only a move updates them. After moving the body any other way
 `move_and_stair_step()` before reading them, or they still report the old spot.
 
 A body at rest skips its checks. With no velocity and no `desired_velocity`, on a
-static floor that carries it nowhere, it makes no queries while neither it nor its
-floor has moved, and the getters keep the last move's answers. It checks again once
-it is given velocity or intent, is moved, or its floor moves or is freed. Anything
-that changes without moving either one is not seen until then: another body moving
-into it, a change to its own shapes such as a crouch, a floor that stops colliding.
-Velocity has to be exactly zero, so snap one that decays toward zero.
+static floor that carries it nowhere, it makes one cheap shape query per move in
+place of them, while neither it nor its floor has moved and nothing but static
+bodies touches it, and the getters keep the last move's answers. It checks again
+once it is given velocity or intent, is moved, its floor moves or is freed, or
+something that is not static touches it. A change to its own shapes, such as a
+crouch, or a floor that stops colliding, is not seen until then. Velocity has to be
+exactly zero, so snap one that decays toward zero.
 
 `desired_velocity` is where the controller wants to go this frame. It lets the body
 step up from a standstill while pressed against a step face, where velocity has
