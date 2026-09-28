@@ -184,6 +184,18 @@ private:
 	bool _rest_valid = false;
 	Transform3D _rest_transform;
 	Transform3D _rest_floor_transform;
+	// The collider as the body came to rest: each shape on the server and where it
+	// sits, and which shape owners were off. A shape changed in place announces itself
+	// instead, through its changed signal; see _watch_shapes.
+	struct RestShape {
+		RID shape;
+		Transform3D transform;
+	};
+	LocalVector<RestShape> _rest_shapes;
+	uint64_t _rest_disabled_owners = 0;
+	// How far the last settle test's recovery moved the body. Past EMBED_MARGINS of
+	// them the body is inside something, not resting on it, and does not rest.
+	double _settle_depth = 0.0;
 
 	// Where a successful step left the body, and how far it rose. Written by _step_sweeps;
 	// the rise is announced once the move is final, since a re-slide can redo the step.
@@ -201,6 +213,10 @@ private:
 	bool _resting();
 	bool _touched_by_mover();
 	void _mark_rest(bool p_still);
+	bool _shapes_unchanged();
+	uint64_t _disabled_owners();
+	void _watch_shapes();
+	void _on_shape_changed();
 	double _step_down_reach() const;
 	Vector3 _intended_motion(bool p_was_on_floor, double p_delta) const;
 	void _refresh_platform_velocity();

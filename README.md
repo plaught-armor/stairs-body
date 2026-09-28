@@ -141,8 +141,10 @@ or something that is not static touches it. Two kinds of toucher are passed over
 since neither can move into it: a StairsBody that collides with it, which stops at
 its surface, and a crowd neighbour. So a still body in a pile of StairsBody nodes
 stays at rest while others press on it, and does not list them. A change to its own
-shapes, such as a crouch, a floor that stops colliding, or a StairsBody teleported
-into it, is not seen until then. Velocity has to be
+collider wakes it too: a shape resized, swapped, moved or switched off, as a crouch
+does. So does starting inside something, such as a spawn point set into the floor:
+the body only rests once it is out. A floor that stops colliding, or a StairsBody
+teleported into it, is not seen until the body moves or is moved. Velocity has to be
 exactly zero, so snap one that decays toward zero.
 
 `desired_velocity` is where the controller wants to go this frame. It lets the body

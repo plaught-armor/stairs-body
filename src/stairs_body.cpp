@@ -501,7 +501,7 @@ bool StairsBody::_resting() {
 	if (!_rest_valid || !_still()) {
 		return false;
 	}
-	_rest_valid = get_global_transform() == _rest_transform &&
+	_rest_valid = get_global_transform() == _rest_transform && _shapes_unchanged() &&
 			UtilityFunctions::is_instance_id_valid(_floor_id) &&
 			Transform3D(physics()->body_get_state(_floor_rid, PhysicsServer3D::BODY_STATE_TRANSFORM)) == _rest_floor_transform &&
 			!_touched_by_mover();
@@ -566,13 +566,75 @@ bool StairsBody::_touched_by_mover() {
 // touched by nothing that moves, may skip the next one. A conveyor is static and does carry, and a floor on
 // step_ignore_layers has no RID kept, since it may move under the body.
 void StairsBody::_mark_rest(bool p_still) {
-	_rest_valid = p_still && _on_floor && _floor_rid.is_valid() && _platform_velocity == Vector3() &&
+	_rest_valid = p_still && _on_floor && _settle_depth <= safe_margin * EMBED_MARGINS && _floor_rid.is_valid() && _platform_velocity == Vector3() &&
 			physics()->body_get_mode(_floor_rid) == PhysicsServer3D::BODY_MODE_STATIC && !_touched_by_mover();
 	if (!_rest_valid) {
 		return;
 	}
 	_rest_transform = get_global_transform();
 	_rest_floor_transform = physics()->body_get_state(_floor_rid, PhysicsServer3D::BODY_STATE_TRANSFORM);
+	const RID rid = get_rid();
+	const int count = physics()->body_get_shape_count(rid);
+	_rest_shapes.resize(count);
+	for (int i = 0; i < count; i++) {
+		_rest_shapes[i].shape = physics()->body_get_shape(rid, i);
+		_rest_shapes[i].transform = physics()->body_get_shape_transform(rid, i);
+	}
+	_rest_disabled_owners = _disabled_owners();
+	_watch_shapes();
+}
+
+// Whether the collider is as it was when the body came to rest: the same shapes,
+// in the same places, on or off alike. A crouch that swaps or moves a shape shows
+// here; one that resizes a shape in place is caught by _on_shape_changed.
+bool StairsBody::_shapes_unchanged() {
+	const RID rid = get_rid();
+	const uint32_t count = physics()->body_get_shape_count(rid);
+	if (count != _rest_shapes.size()) {
+		return false;
+	}
+	for (uint32_t i = 0; i < count; i++) {
+		if (physics()->body_get_shape(rid, i) != _rest_shapes[i].shape ||
+				physics()->body_get_shape_transform(rid, i) != _rest_shapes[i].transform) {
+			return false;
+		}
+	}
+	return _disabled_owners() == _rest_disabled_owners;
+}
+
+// One bit per shape owner, in owner order, set when that owner is disabled. The
+// server keeps no getter for a shape's disabled flag. Owners past 64 are not seen.
+uint64_t StairsBody::_disabled_owners() {
+	uint64_t bits = 0;
+	const PackedInt32Array owners = get_shape_owners();
+	for (int64_t k = 0; k < owners.size() && k < 64; k++) {
+		if (is_shape_owner_disabled(owners[k])) {
+			bits |= uint64_t(1) << k;
+		}
+	}
+	return bits;
+}
+
+// Connects each of the body's shapes to _on_shape_changed, once. A shape resized in
+// place keeps its RID and its place, so only its own signal says it changed.
+void StairsBody::_watch_shapes() {
+	const Callable on_changed = callable_mp(this, &StairsBody::_on_shape_changed);
+	const PackedInt32Array owners = get_shape_owners();
+	for (int64_t k = 0; k < owners.size(); k++) {
+		const uint32_t owner_id = owners[k];
+		for (int i = 0; i < shape_owner_get_shape_count(owner_id); i++) {
+			const Ref<Shape3D> shape = shape_owner_get_shape(owner_id, i);
+			if (shape.is_valid() && !shape->is_connected("changed", on_changed)) {
+				shape->connect("changed", on_changed);
+			}
+		}
+	}
+}
+
+// One of the body's shapes changed in place, such as a crouch resizing a capsule:
+// the next move runs its checks.
+void StairsBody::_on_shape_changed() {
+	_rest_valid = false;
 }
 
 void StairsBody::_clear_contacts() {
@@ -844,8 +906,10 @@ bool StairsBody::_settle_test() {
 	_contact_params->set_margin(safe_margin);
 	_contact_params->set_from(get_global_transform());
 	if (!_test_motion(_contact_params)) {
+		_settle_depth = 0.0;
 		return false;
 	}
+	_settle_depth = _result->get_travel().length();
 	// A redo rolls these back with the rest of the move's contacts.
 	const int count = _result->get_collision_count();
 	for (int i = 0; i < count; i++) {

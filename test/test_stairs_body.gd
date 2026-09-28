@@ -61,6 +61,8 @@ func _run_all() -> void:
 	await _case_b24_a_crowd_push_never_shoves_a_body_into_a_wall()
 	await _case_b26_a_crowd_member_freed_or_added_mid_frame_is_skipped()
 	await _case_b27_a_resting_body_wakes_only_for_a_walker_that_can_enter_it()
+	await _case_b28_a_body_set_into_the_floor_comes_out_before_resting()
+	await _case_b29_a_resting_body_is_checked_again_when_its_collider_changes()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -1224,6 +1226,66 @@ func _case_b27_a_resting_body_wakes_only_for_a_walker_that_can_enter_it() -> voi
 		"b27 a resting body wakes only for a walker that can enter it",
 		kept_rest and listed >= 0,
 		"kept rest %s, walker listed at %d" % [kept_rest, listed],
+	)
+	world.queue_free()
+
+
+## A body set into the floor comes out of it before it rests. Resting there, it
+## was never pushed out: a game's dummy spawned 0.058 m deep, and standing up
+## from a crouch then swept from that sunk pose, past a beam above it.
+func _case_b28_a_body_set_into_the_floor_comes_out_before_resting() -> void:
+	const SINK: float = 0.058
+	const TICKS: int = 60
+	const SETTLED: float = 0.005
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(8.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	var c: StairsBody = _add_body(world, Vector3(0.0, REST_Y - SINK, 0.0))
+	await _hold_still(c, TICKS)
+
+	_check(
+		"b28 a body set into the floor comes out before resting",
+		absf(c.global_position.y - REST_Y) < SETTLED,
+		"y=%.4f expected %.4f" % [c.global_position.y, REST_Y],
+	)
+	world.queue_free()
+
+
+## A resting body whose own collider changes is checked again, as a sleeping rigid
+## body is woken by a shape change: a crouch that stands up grows the collider, and
+## only the checks push the body back out of what it now overlaps. Grown taller about
+## its centre, then moved down on its node, the collider sinks into the floor both
+## times, and each time the body rises out of it. Switched off, it no longer stands
+## on anything, and the body falls.
+func _case_b29_a_resting_body_is_checked_again_when_its_collider_changes() -> void:
+	const REST: int = 20
+	const TICKS: int = 30
+	const GROW: float = 0.2
+	const LOWER: float = 0.1
+	const SETTLED: float = 0.005
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(8.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	var c: StairsBody = _add_body(world, Vector3(0.0, REST_Y, 0.0))
+	await _hold_still(c, REST)
+	var shape_node: CollisionShape3D = c.get_child(0) as CollisionShape3D
+	var cylinder: CylinderShape3D = shape_node.shape as CylinderShape3D
+	cylinder.height = BODY_HEIGHT + GROW
+	await _hold_still(c, TICKS)
+	var grown_y: float = c.global_position.y
+	shape_node.position = Vector3(0.0, -LOWER, 0.0)
+	await _hold_still(c, TICKS)
+	var lowered_y: float = c.global_position.y
+	shape_node.disabled = true
+	await _hold_still(c, TICKS)
+	var fell: bool = c.global_position.y < lowered_y - EPS
+
+	_check(
+		"b29 a resting body is checked again when its collider changes",
+		(
+			absf(grown_y - (REST_Y + GROW * 0.5)) < SETTLED
+			and absf(lowered_y - (REST_Y + GROW * 0.5 + LOWER)) < SETTLED and fell
+		),
+		"grown y=%.4f expected %.4f, lowered y=%.4f expected %.4f, fell when switched off %s"
+		% [grown_y, REST_Y + GROW * 0.5, lowered_y, REST_Y + GROW * 0.5 + LOWER, fell],
 	)
 	world.queue_free()
 
