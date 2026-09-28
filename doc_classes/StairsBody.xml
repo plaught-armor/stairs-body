@@ -13,7 +13,8 @@
 		walking on flat ground   2   (the move sweep, the contact test)
 		standing still           1   (a shape query, once at rest on a static floor)
 		pressed into a wall      2   (the same two; the step attempt is cached)
-		intent off the motion   +1   (a sweep along intent, which only looks for a step)
+		intent off the motion   +1   (a sweep along intent, which only looks for a step;
+		                              only standing still or against a face intent pushes into)
 		climbing a step          5   (move sweep, up, forward, down, contact test)
 		leaving a floor         +1   (the floor probe, only where contact is lost)
 		on a moving platform    +1   (the carry, as its own sweep)

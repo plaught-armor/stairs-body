@@ -123,6 +123,8 @@ private:
 	bool _on_ceiling = false;
 	Vector3 _floor_normal = Vector3(0, 1, 0);
 	Vector3 _wall_normal;
+	// The steep face the last move ended against, or zero; see _slide.
+	Vector3 _last_wall;
 	RID _floor_rid;
 	// The floor's object, which says whether it still exists: a freed body's RID stays
 	// non-zero, and the physics server reads it as static. Assumes every collider is

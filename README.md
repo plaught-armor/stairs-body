@@ -42,7 +42,7 @@ not have helped much. The only way to get cheaper was to run fewer queries.
 | Walking on flat ground | 2 (the move sweep, the contact test) |
 | Standing still on a static floor | 1 shape query once at rest (see below) |
 | Pressed into a wall | 2 (the refused step is cached) |
-| Intent off the motion | +1 (a sweep along intent that only looks for a step) |
+| Intent off the motion | +1 (a sweep along intent that only looks for a step), only standing still or against a face intent pushes into |
 | Climbing a step | 5 (move, up, forward, down, contact test) |
 | Leaving a floor | +1 (the floor probe, only where contact is lost) |
 | On a moving platform | +1 (the carry, as its own sweep) |
@@ -150,7 +150,9 @@ exactly zero, so snap one that decays toward zero.
 `desired_velocity` is where the controller wants to go this frame. It lets the body
 step up from a standstill while pressed against a step face, where velocity has
 been clipped to zero, and climb a step that intent points at but this frame's
-motion does not.
+motion does not. That second sweep only runs where a step can be: standing still,
+or when the last move ended against a steep face that intent pushes into. Motion
+turned by anything else, such as crowd neighbours, costs no extra sweep.
 
 Use a `CylinderShape3D` with its margin around `0.001`. Nearly every test case uses
 that shape. A rounded bottom meets a tread's corner before its face, and the floor
@@ -360,8 +362,8 @@ Neighbours touched are listed in the [contact list](#contacts), with the other
 member as collider and a horizontal normal pointing back at this body, and
 velocity is clipped against them.
 
-`test/bench_pile.gd -- --crowd`, 96 box-shaped bodies pressed into a pile, costs 18
-µs per body on Godot Physics and 11 on Jolt, against 47 and 32 with collision. Of
+`test/bench_pile.gd -- --crowd`, 96 box-shaped bodies pressed into a pile, costs 17.6
+µs per body on Godot Physics and 10.3 on Jolt, against 47 and 32 with collision. Of
 that, the separation itself is under 3 µs; the rest is the sweeps against the
 floor. The same bodies standing apart and still cost what they cost without it.
 

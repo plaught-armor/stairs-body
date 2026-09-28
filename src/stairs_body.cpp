@@ -154,6 +154,7 @@ void StairsBody::move_and_stair_step() {
 	// neighbours touched.
 	const uint32_t carried_contacts = _contacts.size();
 	const bool may_step = was_on_floor || force_stair_step;
+	_last_wall = _on_wall ? _wall_normal : Vector3();
 	_clear_contacts();
 	_slide(motion, may_step, delta, false);
 	if (_settle()) {
@@ -717,8 +718,14 @@ void StairsBody::_slide(Vector3 p_motion, bool p_may_step, double p_delta, bool 
 	Vector3 probe = p_verify ? p_motion : _step_probe(p_motion, p_may_step, p_delta);
 	if (probe != p_motion && probe.normalized().dot(p_motion.normalized()) < PARALLEL) {
 		// Intent points away from this frame's motion, so the probe's sweep says
-		// nothing about where the body can go. It only looks for a step.
-		if (_intent_step(from, probe, p_motion.length())) {
+		// nothing about where the body can go. It only looks for a step, and only
+		// where one can be: standing still, or against a face that intent pushes
+		// into. Otherwise the motion was turned by something that is no step - a
+		// crowd neighbour, or a face already slid off - and the slide's own sweep
+		// meets any face along the motion. Jolt's CanWalkStairs gates its step the
+		// same way, on a steep contact the body pushes into.
+		const bool may_meet_step = p_motion * HORIZONTAL_MASK == Vector3() || _last_wall.dot(probe) < 0.0;
+		if (may_meet_step && _intent_step(from, probe, p_motion.length())) {
 			set_global_transform(_step_to);
 			return;
 		}

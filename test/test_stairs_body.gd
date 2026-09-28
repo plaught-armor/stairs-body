@@ -64,6 +64,7 @@ func _run_all() -> void:
 	await _case_b28_a_body_set_into_the_floor_comes_out_before_resting()
 	await _case_b29_a_resting_body_is_checked_again_when_its_collider_changes()
 	await _case_b30_crowd_overlap_under_the_slop_is_left_alone()
+	await _case_b31_held_still_at_a_step_with_intent_into_it_climbs()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -1354,3 +1355,30 @@ class ErrorCounter:
 	) -> void:
 		if error_type == ERROR_TYPE_ERROR:
 			errors += 1
+
+
+## Held still at a step face - velocity zero, intent into the face - the body climbs.
+## The frame has no motion, so the only sweep that can meet the face is the step
+## probe along intent. Gating that probe to where a step can be must keep this.
+func _case_b31_held_still_at_a_step_with_intent_into_it_climbs() -> void:
+	const FACE_GAP: float = 0.002
+	var world: Node3D = _slow_walk_world(true)
+	var c: StairsBody = _add_body(world, Vector3(1.0 - BODY_RADIUS - FACE_GAP, REST_Y, 0.0))
+	for _i: int in 15:
+		await get_tree().physics_frame
+		c.velocity.y -= GRAVITY * DELTA
+		c.move_and_stair_step()
+	var start_y: float = c.global_position.y
+	for _i: int in 30:
+		await get_tree().physics_frame
+		c.velocity = Vector3(0.0, c.velocity.y - GRAVITY * DELTA, 0.0)
+		c.desired_velocity = Vector3(3.0, 0.0, 0.0)
+		c.move_and_stair_step()
+
+	var rose: float = c.global_position.y - start_y
+	_check(
+		"b31 held still at a step with intent into it climbs",
+		absf(rose - STEP_TOP) < EPS,
+		"rose %.3f m, expected %.3f" % [rose, STEP_TOP],
+	)
+	world.queue_free()
