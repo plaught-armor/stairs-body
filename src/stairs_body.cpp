@@ -68,6 +68,11 @@ void StairsBody::_record_contact(int p_index) {
 
 // Moves the body by velocity for one physics frame, stepping up and down stairs.
 void StairsBody::move_and_stair_step() {
+	if (_resting()) {
+		velocity.y = 0.0;
+		return;
+	}
+	const bool still = _still();
 	_params->set_margin(safe_margin);
 	const double delta = get_physics_process_delta_time();
 	const bool was_on_floor = _on_floor;
@@ -125,9 +130,47 @@ void StairsBody::move_and_stair_step() {
 	if (_on_floor && velocity.y < 0.0) {
 		velocity.y = 0.0;
 	}
+	_mark_rest(still);
 
 	desired_velocity = Vector3();
 	force_stair_step = false;
+}
+
+// No motion of its own this frame: nothing horizontal, not rising, no intent and no
+// forced step. Exact, as _intended_motion's test for no motion is, so a velocity
+// that decays toward zero has to be snapped to it before the body can rest.
+bool StairsBody::_still() const {
+	return velocity * HORIZONTAL_MASK == Vector3() && velocity.y <= 0.0 &&
+			desired_velocity == Vector3() && !force_stair_step;
+}
+
+// Whether this move can be skipped. Still, from where the last move left it, on
+// the same static floor, unmoved, the move would redo that move's checks and find
+// what they found: 3.3 us on Jolt and 6.6 on Godot Physics for a box-shaped body,
+// nearly all the contact test. The getters keep the last move's answers, so a body
+// that something else moves into, or whose floor stops colliding without moving,
+// is not told until it moves or is moved.
+bool StairsBody::_resting() {
+	if (!_rest_valid || !_still()) {
+		return false;
+	}
+	_rest_valid = get_global_transform() == _rest_transform &&
+			UtilityFunctions::is_instance_id_valid(_floor_id) &&
+			Transform3D(physics()->body_get_state(_floor_rid, PhysicsServer3D::BODY_STATE_TRANSFORM)) == _rest_floor_transform;
+	return _rest_valid;
+}
+
+// After a full move: a still body on a static floor that carries it nowhere may
+// skip the next one. A conveyor is static and does carry, and a floor on
+// step_ignore_layers has no RID kept, since it may move under the body.
+void StairsBody::_mark_rest(bool p_still) {
+	_rest_valid = p_still && _on_floor && _floor_rid.is_valid() && _platform_velocity == Vector3() &&
+			physics()->body_get_mode(_floor_rid) == PhysicsServer3D::BODY_MODE_STATIC;
+	if (!_rest_valid) {
+		return;
+	}
+	_rest_transform = get_global_transform();
+	_rest_floor_transform = physics()->body_get_state(_floor_rid, PhysicsServer3D::BODY_STATE_TRANSFORM);
 }
 
 void StairsBody::_clear_contacts() {

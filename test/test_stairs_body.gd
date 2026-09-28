@@ -51,6 +51,7 @@ func _run_all() -> void:
 	await _case_b19_a_step_up_is_never_followed_by_a_false_step_down()
 	await _case_b20_a_step_onto_a_rounded_nosing_never_launches_the_body()
 	await _case_b21_standing_on_an_ignored_body_stays_on_the_floor()
+	await _case_b22_a_resting_body_wakes_when_its_floor_or_place_changes()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -936,6 +937,66 @@ func _case_b21_standing_on_an_ignored_body_stays_on_the_floor() -> void:
 		airborne == 0 and absf(c.global_position.y - SLAB_TOP - REST_Y) < EPS,
 		"%d of %d ticks off the floor, y=%.4f expected 0, ~%.2f"
 		% [airborne, TICKS, c.global_position.y, SLAB_TOP + REST_Y],
+	)
+	world.queue_free()
+
+
+## Ticks a still body: gravity in, no intent, as a caller holding it still does.
+func _hold_still(c: StairsBody, ticks: int) -> void:
+	for _i: int in ticks:
+		await get_tree().physics_frame
+		c.velocity = Vector3(0.0, c.velocity.y - GRAVITY * DELTA, 0.0)
+		c.move_and_stair_step()
+
+
+## A still body on a static floor skips its checks while nothing changes, and has
+## to notice when something does: its floor moved, its floor freed, or the body
+## itself moved by the caller. Without each wake the body hovered where it came to
+## rest, or kept reading on the floor in mid-air.
+func _case_b22_a_resting_body_wakes_when_its_floor_or_place_changes() -> void:
+	const REST: int = 20
+	const FOLLOW: int = 10
+	const DROP: float = 0.1
+	var world: Node3D = _new_world()
+	var floor_box: StaticBody3D = _add_box(world, Vector3(8.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	var c: StairsBody = _add_body(world, Vector3(0.0, REST_Y, 0.0))
+	await _hold_still(c, REST)
+	floor_box.global_position.y -= DROP
+	await _hold_still(c, FOLLOW)
+	var followed_y: float = c.global_position.y
+
+	await _hold_still(c, REST)
+	c.global_position.y += 1.0
+	await _hold_still(c, 1)
+	var lifted_on_floor: bool = c.is_on_floor()
+
+	world.queue_free()
+
+	# A floor at the identity transform: a freed body's transform reads back as the
+	# identity, so only the floor's object says it is gone.
+	world = _new_world()
+	floor_box = _add_box(world, Vector3(8.0, 1.0, 8.0), Vector3.ZERO)
+	_add_box(world, Vector3(8.0, 1.0, 8.0), Vector3(0.0, -3.0, 0.0))
+	c = _add_body(world, Vector3(0.0, 0.5 + REST_Y, 0.0))
+	await _hold_still(c, REST)
+	var counter: ErrorCounter = ErrorCounter.new()
+	OS.add_logger(counter)
+	floor_box.free()
+	await _hold_still(c, FOLLOW)
+	OS.remove_logger(counter)
+	var fell: bool = not c.is_on_floor() and c.global_position.y < 0.5 + REST_Y - EPS
+
+	_check(
+		"b22 a resting body wakes when its floor or place changes",
+		(
+			absf(followed_y - (REST_Y - DROP)) < EPS
+			and not lifted_on_floor and fell and counter.errors == 0
+		),
+		(
+			"followed its floor to y=%.4f expected ~%.2f, on floor lifted into the air=%s,"
+			+ " fell once a floor at the identity was freed=%s, %d engine errors"
+		)
+		% [followed_y, REST_Y - DROP, lifted_on_floor, fell, counter.errors],
 	)
 	world.queue_free()
 

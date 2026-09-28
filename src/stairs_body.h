@@ -121,12 +121,21 @@ private:
 	RID _refused_rid;
 	double _refused_height = 0.0;
 
+	// A still body on a still, static floor skips its checks until something about it
+	// changes; see _resting. Where it came to rest, and where its floor was then.
+	bool _rest_valid = false;
+	Transform3D _rest_transform;
+	Transform3D _rest_floor_transform;
+
 	// Where a successful step left the body, and how far it rose. Written by _step_sweeps;
 	// the rise is announced once the move is final, since a re-slide can redo the step.
 	Transform3D _step_to;
 	double _step_rise = 0.0;
 
 	void _clear_contacts();
+	bool _still() const;
+	bool _resting();
+	void _mark_rest(bool p_still);
 	double _step_down_reach() const;
 	Vector3 _intended_motion(bool p_was_on_floor, double p_delta) const;
 	void _refresh_platform_velocity();

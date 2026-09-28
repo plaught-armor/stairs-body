@@ -9,6 +9,11 @@ extends Node3D
 ## steps, press toward one point at walk pace and barely move, as a game measured
 ## its pile: 2.2 m/s wished, about 0.3 m/s moved. Only the move calls of the last
 ## half are timed, once the pile has formed.
+##
+##     godot --headless --path <repo root> res://test/bench_pile.tscn -- --idle
+##
+## runs the same bodies with nothing wished, standing still where they spawned, apart:
+## a crowd waiting, the case a resting body skips its checks for.
 
 const BODIES: int = 96
 const PER_RING: int = 24
@@ -22,6 +27,7 @@ const WORLD_LAYER: int = 1
 const CROWD_LAYER: int = 32
 
 var _bodies: Array[StairsBody] = []
+var _wish_speed: float = 0.0 if OS.get_cmdline_user_args().has("--idle") else WISH
 
 
 func _ready() -> void:
@@ -85,7 +91,7 @@ func _step(body: StairsBody) -> void:
 	var distance: float = to_centre.length()
 	var wish: Vector3 = Vector3.ZERO
 	if distance > 0.05:
-		wish = to_centre * (WISH / distance)
+		wish = to_centre * (_wish_speed / distance)
 	var walk: Vector3 = (body.velocity * Vector3(1.0, 0.0, 1.0)).lerp(wish, ACCEL)
 	body.velocity = Vector3(walk.x, body.velocity.y - GRAVITY_STEP, walk.z)
 	body.desired_velocity = wish
