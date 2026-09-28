@@ -163,6 +163,7 @@ walking down, but not climbing.
 | `max_slides` | `4` | Slides for the main move. On the floor, a wall met within 15° of head-on stops the slide, as `CharacterBody3D`'s default `wall_min_slide_angle` does. |
 | `safe_margin` | `0.001` | Collision margin for every sweep. |
 | `step_ignore_layers` | none | Layers a step is never placed onto, though the body still collides with them: bodies too small or too self-driving to be a stair. A floor on them holds the body up but never carries it as a platform. A crowd's own layer belongs here, which also makes it much cheaper: see [Contacts](#contacts). |
+| `crowd_layers` | none | Layers of other `StairsBody` nodes this one keeps apart from by crowd separation rather than by collision. Leave those layers out of `collision_mask`. See [Crowds](#crowds). |
 | `velocity` | zero | Velocity in m/s. After each move it is clipped against what the body hit, and its downward part is zeroed on the floor. |
 | `desired_velocity` | zero | Horizontal intent for this frame. Cleared after each move. |
 | `force_stair_step` | `false` | Allow a step this frame while airborne, such as a ledge catch. Cleared after each move. |
@@ -322,6 +323,52 @@ pressed together, pushing out of every neighbour is most of what it costs, and t
 slide already lists the neighbours the body moves into. A step the body tried and
 refused lists none of its sweeps. The list is cleared at the start of every move.
 A collider can appear more than once, and the order carries no meaning.
+
+## Crowds
+
+In a crowd pressed together, most of each move is the engine pushing the body out
+of the neighbours it touches, inside every sweep. Crowd separation takes the crowd
+out of the sweeps. Put the crowd on its own layer, leave that layer out of each
+member's `collision_mask`, and set `crowd_layers` to it:
+
+```gdscript
+body.collision_layer = CROWD
+body.collision_mask = WORLD           # not CROWD
+body.crowd_layers = CROWD
+body.step_ignore_layers = CROWD
+```
+
+Members then keep apart by geometry the way crowd libraries do (DetourCrowd,
+position-based crowds). Each member's footprint is a capsule lying flat, measured
+once from its shapes' bounds, and is kept apart in two ways:
+
+- Once per physics frame, before the first member moves, every pair that overlaps
+  is pushed apart, each taking half. A member takes its push as part of its own
+  next move, so the push is swept against the world with the move and never
+  shoves the member into a wall. A member not moved that frame never takes it.
+- Each move's own motion is kept out of the neighbours, so a member walking into
+  one stops at it, as a sweep would stop it.
+
+Neighbours touched are listed in the [contact list](#contacts), with the other
+member as collider and a horizontal normal pointing back at this body, and
+velocity is clipped against them.
+
+`test/bench_pile.gd -- --crowd`, 96 box-shaped bodies pressed into a pile, costs 18
+µs per body on Godot Physics and 11 on Jolt, against 47 and 32 with collision. Of
+that, the separation itself is under 3 µs; the rest is the sweeps against the
+floor. The same bodies standing apart and still cost what they cost without it.
+
+What changes:
+
+- Members never stand on each other. A pile stays one deep.
+- The footprint is a capsule. A box's corners stick out of it, so box-shaped
+  members can overlap corner to corner, by up to about 40% of their width: 6-9 mm
+  on average and about 25 mm at worst in that pile of 60 mm wide bodies.
+- Only members see each other this way. Anything else on the layer, and any body
+  that keeps the layer in its mask (a player walking through the crowd), collides
+  with members as usual.
+- Moving or resizing a member's shapes after it first moves is not seen: the
+  footprint is measured once.
 
 ## Physics engines
 

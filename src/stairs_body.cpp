@@ -2,6 +2,8 @@
 
 #include <godot_cpp/classes/box_shape3d.hpp>
 #include <godot_cpp/classes/cylinder_shape3d.hpp>
+#include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/physics_direct_body_state3d.hpp>
 #include <godot_cpp/classes/physics_direct_space_state3d.hpp>
 #include <godot_cpp/classes/shape3d.hpp>
@@ -14,6 +16,10 @@
 #include <godot_cpp/variant/typed_array.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
+#include <cmath>
+#include <unordered_map>
+#include <vector>
+
 using namespace godot;
 
 namespace {
@@ -22,7 +28,64 @@ PhysicsServer3D *physics() {
 	return PhysicsServer3D::get_singleton();
 }
 
+// Every StairsBody in the tree, for crowd separation.
+std::vector<StairsBody *> g_members;
+// The physics frame the crowd snapshot was taken on.
+uint64_t g_crowd_frame = UINT64_MAX;
+// Grid over the snapshot's footprint centres, by cell, holding snapshot indices.
+// Cells are as wide as the longest reach doubled plus the lookahead, so any two
+// footprints that could touch this frame are at most one cell apart.
+std::unordered_map<int64_t, std::vector<uint32_t>> g_grid;
+
+int64_t cell_key(int64_t p_x, int64_t p_z) {
+	return (p_x << 32) ^ (p_z & 0xffffffff);
+}
+
+// Closest points between segments p1-q1 and p2-q2, all with y = 0 (Ericson,
+// Real-Time Collision Detection, 5.1.9).
+void closest_on_segments(const Vector3 &p1, const Vector3 &q1, const Vector3 &p2, const Vector3 &q2, Vector3 &r_c1, Vector3 &r_c2) {
+	const Vector3 d1 = q1 - p1;
+	const Vector3 d2 = q2 - p2;
+	const Vector3 r = p1 - p2;
+	const double a = d1.dot(d1);
+	const double e = d2.dot(d2);
+	const double f = d2.dot(r);
+	double s = 0.0;
+	double t = 0.0;
+	if (a <= 1e-12 && e <= 1e-12) {
+		r_c1 = p1;
+		r_c2 = p2;
+		return;
+	}
+	if (a <= 1e-12) {
+		t = CLAMP(f / e, 0.0, 1.0);
+	} else {
+		const double c = d1.dot(r);
+		if (e <= 1e-12) {
+			s = CLAMP(-c / a, 0.0, 1.0);
+		} else {
+			const double b = d1.dot(d2);
+			const double denom = a * e - b * b;
+			s = denom > 1e-12 ? CLAMP((b * f - c * e) / denom, 0.0, 1.0) : 0.0;
+			t = (b * s + f) / e;
+			if (t < 0.0) {
+				t = 0.0;
+				s = CLAMP(-c / a, 0.0, 1.0);
+			} else if (t > 1.0) {
+				t = 1.0;
+				s = CLAMP((b - c) / a, 0.0, 1.0);
+			}
+		}
+	}
+	r_c1 = p1 + d1 * s;
+	r_c2 = p2 + d2 * t;
+}
+
 } // namespace
+
+std::vector<StairsBody::CrowdSnap> StairsBody::s_snap;
+std::vector<std::pair<uint32_t, uint32_t>> StairsBody::s_pairs;
+std::vector<uint32_t> StairsBody::s_adjacent;
 
 StairsBody::StairsBody() {
 	_params.instantiate();
@@ -69,11 +132,12 @@ void StairsBody::_record_contact(int p_index) {
 
 // Moves the body by velocity for one physics frame, stepping up and down stairs.
 void StairsBody::move_and_stair_step() {
-	if (_resting()) {
+	const bool overlapping = _crowd_gather();
+	if (!overlapping && _resting()) {
 		velocity.y = 0.0;
 		return;
 	}
-	const bool still = _still();
+	const bool still = _still() && !overlapping;
 	_params->set_margin(safe_margin);
 	const double delta = get_physics_process_delta_time();
 	const bool was_on_floor = _on_floor;
@@ -82,11 +146,13 @@ void StairsBody::move_and_stair_step() {
 		_refresh_platform_velocity();
 		_carry(_platform_velocity * delta);
 	}
-	const uint32_t carried_contacts = _contacts.size();
 
 	const Transform3D start = get_global_transform();
+	const Vector3 motion = _crowd_solve(_intended_motion(was_on_floor, delta));
 	const Vector3 start_velocity = velocity;
-	const Vector3 motion = _intended_motion(was_on_floor, delta);
+	// A redo keeps what came before the slide: the carry's contact and the crowd
+	// neighbours touched.
+	const uint32_t carried_contacts = _contacts.size();
 	const bool may_step = was_on_floor || force_stair_step;
 	_clear_contacts();
 	_slide(motion, may_step, delta, false);
@@ -135,6 +201,287 @@ void StairsBody::move_and_stair_step() {
 
 	desired_velocity = Vector3();
 	force_stair_step = false;
+}
+
+void StairsBody::_notification(int p_what) {
+	if (p_what == NOTIFICATION_ENTER_TREE) {
+		g_members.push_back(this);
+		_space = get_world_3d()->get_space();
+	} else if (p_what == NOTIFICATION_EXIT_TREE) {
+		for (size_t i = 0; i < g_members.size(); i++) {
+			if (g_members[i] == this) {
+				g_members[i] = g_members.back();
+				g_members.pop_back();
+				break;
+			}
+		}
+		// Out of this frame's snapshot too, which others read until the next one.
+		if (_snap_index < s_snap.size() && s_snap[_snap_index].body == this) {
+			s_snap[_snap_index].body = nullptr;
+		}
+		_snap_index = UINT32_MAX;
+		_crowd_pending = Vector3();
+	}
+}
+
+// The body's shapes' combined bounds, in its own frame, as a capsule lying in the
+// horizontal plane along the longer of x and z. Measured once, from the first move
+// that finds shapes on the body.
+void StairsBody::_measure_footprint() {
+	AABB bounds;
+	bool any = false;
+	const PackedInt32Array owners = get_shape_owners();
+	for (int64_t k = 0; k < owners.size(); k++) {
+		const uint32_t owner_id = owners[k];
+		if (is_shape_owner_disabled(owner_id)) {
+			continue;
+		}
+		const Transform3D at = shape_owner_get_transform(owner_id);
+		for (int i = 0; i < shape_owner_get_shape_count(owner_id); i++) {
+			const Ref<ArrayMesh> mesh = shape_owner_get_shape(owner_id, i)->get_debug_mesh();
+			if (mesh.is_null()) {
+				continue;
+			}
+			const AABB box = at.xform(mesh->get_aabb());
+			bounds = any ? bounds.merge(box) : box;
+			any = true;
+		}
+	}
+	// No shapes yet: measured again at the next move.
+	if (!any) {
+		return;
+	}
+	_footprint_known = true;
+	const Vector3 half = bounds.size * 0.5;
+	_foot_centre = bounds.get_center() * HORIZONTAL_MASK;
+	_foot_bottom = bounds.position.y;
+	_foot_top = bounds.position.y + bounds.size.y;
+	_foot_radius = MIN(half.x, half.z);
+	_foot_half_length = MAX(half.x, half.z) - _foot_radius;
+	_foot_axis = half.x > half.z ? Vector3(1, 0, 0) : Vector3(0, 0, 1);
+}
+
+// This body's footprint where `xform` puts it, in the form a neighbour is kept.
+StairsBody::Neighbour StairsBody::_foot_world(const Transform3D &p_xform) const {
+	Neighbour n;
+	n.id = get_instance_id();
+	n.axis = (p_xform.basis.xform(_foot_axis) * HORIZONTAL_MASK).normalized() * _foot_half_length;
+	n.centre = p_xform.xform(_foot_centre) * HORIZONTAL_MASK;
+	n.radius = _foot_radius;
+	n.bottom = p_xform.origin.y + _foot_bottom;
+	n.top = p_xform.origin.y + _foot_top;
+	return n;
+}
+
+// Gap between footprints `a` and `b` shifted by `a_shift` and `b_shift`, negative
+// when they overlap, or +inf when they are stacked rather than side by side.
+// `r_normal` points from b to a.
+double StairsBody::_foot_gap(const Neighbour &p_a, const Vector3 &p_a_shift, const Neighbour &p_b, const Vector3 &p_b_shift, Vector3 &r_normal) {
+	const double overlap_y = MIN(p_a.top, p_b.top) - MAX(p_a.bottom, p_b.bottom);
+	if (overlap_y <= 0.5 * MIN(p_a.top - p_a.bottom, p_b.top - p_b.bottom)) {
+		return INFINITY;
+	}
+	const Vector3 a = p_a.centre + p_a_shift;
+	const Vector3 b = p_b.centre + p_b_shift;
+	Vector3 on_a;
+	Vector3 on_b;
+	closest_on_segments(a - p_a.axis, a + p_a.axis, b - p_b.axis, b + p_b.axis, on_a, on_b);
+	const Vector3 apart = on_a - on_b;
+	const double distance = apart.length();
+	if (distance > 1e-9) {
+		r_normal = apart / distance;
+	} else {
+		r_normal = (a - b).length() > 1e-9 ? (a - b).normalized() : Vector3(1, 0, 0);
+	}
+	return distance - p_a.radius - p_b.radius;
+}
+
+// Once per physics frame, before the first member moves. Every member is read once
+// into a snapshot: footprint, layers and space, so nothing below calls the engine.
+// Pairs of members that are crowd to each other and could touch this frame are found
+// once through a grid, and kept as each member's neighbour list.
+// Every pair that overlaps is then pushed apart, each taking half, over a few Jacobi
+// passes - the separation step of DetourCrowd and of position-based crowds. Each
+// member's push is not applied here but added to its own next move, so the move's
+// sweeps carry it and it never goes into a wall.
+void StairsBody::_crowd_frame() {
+	const uint32_t count = g_members.size();
+	const double frame_time = count > 0 ? g_members[0]->get_physics_process_delta_time() : 0.0;
+	s_snap.resize(count);
+	double reach = 0.0;
+	for (uint32_t i = 0; i < count; i++) {
+		StairsBody *member = g_members[i];
+		if (!member->_footprint_known) {
+			member->_measure_footprint();
+		}
+		CrowdSnap &snap = s_snap[i];
+		snap.body = member;
+		snap.foot = member->_foot_world(member->get_global_transform());
+		snap.layer = member->get_collision_layer();
+		snap.crowd = member->crowd_layers;
+		snap.space = member->_space;
+		// Reach grows by how far the member may walk this frame, at last frame's
+		// speed, so two closing on each other are listed before they meet.
+		snap.reach = member->_foot_radius + member->_foot_half_length + (member->velocity * HORIZONTAL_MASK).length() * frame_time;
+		snap.first = 0;
+		snap.count = 0;
+		member->_snap_index = i;
+		member->_crowd_pending = Vector3();
+		reach = MAX(reach, snap.reach);
+	}
+	const double cell = MAX(reach * 2.0 + CROWD_LOOKAHEAD, 0.01);
+	g_grid.clear();
+	for (uint32_t i = 0; i < count; i++) {
+		if (s_snap[i].crowd == 0) {
+			continue;
+		}
+		const Vector3 &at = s_snap[i].foot.centre;
+		g_grid[cell_key((int64_t)std::floor(at.x / cell), (int64_t)std::floor(at.z / cell))].push_back(i);
+	}
+
+	// Neighbour lists, both ways round, packed one member after another.
+	s_pairs.clear();
+	s_adjacent.clear();
+	for (uint32_t i = 0; i < count; i++) {
+		const CrowdSnap &a = s_snap[i];
+		s_snap[i].first = s_adjacent.size();
+		if (a.crowd == 0) {
+			continue;
+		}
+		const int64_t cx = (int64_t)std::floor(a.foot.centre.x / cell);
+		const int64_t cz = (int64_t)std::floor(a.foot.centre.z / cell);
+		for (int64_t dx = -1; dx <= 1; dx++) {
+			for (int64_t dz = -1; dz <= 1; dz++) {
+				const auto found = g_grid.find(cell_key(cx + dx, cz + dz));
+				if (found == g_grid.end()) {
+					continue;
+				}
+				for (const uint32_t j : found->second) {
+					const CrowdSnap &b = s_snap[j];
+					if (j == i || a.space != b.space || (a.crowd & b.layer) == 0 || (b.crowd & a.layer) == 0) {
+						continue;
+					}
+					const double near = a.reach + b.reach + CROWD_LOOKAHEAD;
+					if ((a.foot.centre - b.foot.centre).length_squared() > near * near) {
+						continue;
+					}
+					s_adjacent.push_back(j);
+					if (j > i) {
+						s_pairs.push_back({ i, j });
+					}
+				}
+			}
+		}
+		s_snap[i].count = s_adjacent.size() - s_snap[i].first;
+	}
+
+	static std::vector<Vector3> shift;
+	static std::vector<Vector3> delta;
+	shift.assign(count, Vector3());
+	for (int pass = 0; pass < CROWD_PASSES; pass++) {
+		delta.assign(count, Vector3());
+		bool overlapped = false;
+		for (const std::pair<uint32_t, uint32_t> &pair : s_pairs) {
+			Vector3 normal;
+			const double gap = _foot_gap(s_snap[pair.first].foot, shift[pair.first], s_snap[pair.second].foot, shift[pair.second], normal);
+			if (gap >= 0.0) {
+				continue;
+			}
+			delta[pair.first] += normal * (-gap * 0.5);
+			delta[pair.second] -= normal * (-gap * 0.5);
+			overlapped = true;
+		}
+		if (!overlapped) {
+			break;
+		}
+		for (uint32_t i = 0; i < count; i++) {
+			shift[i] += delta[i];
+		}
+	}
+	for (uint32_t i = 0; i < count; i++) {
+		g_members[i]->_crowd_pending = shift[i];
+	}
+}
+
+// This move's crowd neighbours, where they stand now plus any push they have not
+// yet taken, and whether the body overlaps any of them. Brings the snapshot up to
+// this physics frame first.
+bool StairsBody::_crowd_gather() {
+	_neighbours.clear();
+	if (crowd_layers == 0) {
+		return false;
+	}
+	const uint64_t frame = Engine::get_singleton()->get_physics_frames();
+	if (frame != g_crowd_frame) {
+		g_crowd_frame = frame;
+		_crowd_frame();
+	}
+	if (_snap_index >= s_snap.size()) {
+		// Entered the tree since the snapshot: kept apart from the next frame on.
+		return false;
+	}
+	_me = _foot_world(get_global_transform());
+	const CrowdSnap &mine = s_snap[_snap_index];
+	bool overlapping = false;
+	for (uint32_t k = mine.first; k < mine.first + mine.count; k++) {
+		StairsBody *other = s_snap[s_adjacent[k]].body;
+		if (other == nullptr) {
+			continue;
+		}
+		Neighbour n = other->_foot_world(other->get_global_transform());
+		n.centre += other->_crowd_pending;
+		Vector3 normal;
+		const double gap = _foot_gap(_me, _crowd_pending, n, Vector3(), normal);
+		// Stacked, not side by side. Anything nearer the pair list already bounds, by
+		// how far both may walk this frame.
+		if (std::isinf(gap)) {
+			continue;
+		}
+		n.floor_y = MAX(_me.bottom, n.bottom);
+		overlapping = overlapping || gap < 0.0;
+		_neighbours.push_back(n);
+	}
+	return overlapping || _crowd_pending != Vector3();
+}
+
+// The horizontal part of `motion`, plus the push the crowd pass left this body,
+// projected out of every gathered neighbour. That stops the body walking into one
+// and pushes it out of any it still overlaps: the position step of position-based
+// dynamics, against neighbours held still. Lists the neighbours touched where the
+// body ends, and clips velocity against them.
+Vector3 StairsBody::_crowd_solve(const Vector3 &p_motion) {
+	Vector3 offset = p_motion * HORIZONTAL_MASK + _crowd_pending;
+	_crowd_pending = Vector3();
+	for (int pass = 0; pass < CROWD_PASSES && !_neighbours.is_empty(); pass++) {
+		bool moved = false;
+		for (const Neighbour &n : _neighbours) {
+			Vector3 normal;
+			const double gap = _foot_gap(_me, offset, n, Vector3(), normal);
+			if (gap < 0.0) {
+				offset += normal * -gap;
+				moved = true;
+			}
+		}
+		if (!moved) {
+			break;
+		}
+	}
+	for (const Neighbour &n : _neighbours) {
+		Vector3 normal;
+		const double gap = _foot_gap(_me, offset, n, Vector3(), normal);
+		if (gap > safe_margin) {
+			continue;
+		}
+		Contact contact;
+		contact.collider_id = n.id;
+		contact.normal = normal;
+		contact.position = _me.centre + offset - normal * (_foot_radius + MAX(gap, 0.0)) + Vector3(0, n.floor_y, 0);
+		_contacts.push_back(contact);
+		if (velocity.dot(normal) < 0.0) {
+			velocity = velocity.slide(normal);
+		}
+	}
+	return offset + Vector3(0, p_motion.y, 0);
 }
 
 // No motion of its own this frame: nothing horizontal, not rising, no intent and no
@@ -914,6 +1261,7 @@ void StairsBody::_bind_methods() {
 	STAIRS_BIND(max_slides, Variant::INT, PROPERTY_HINT_RANGE, "1,8");
 	STAIRS_BIND(safe_margin, Variant::FLOAT, PROPERTY_HINT_RANGE, "0.001,0.1,0.001");
 	STAIRS_BIND(step_ignore_layers, Variant::INT, PROPERTY_HINT_LAYERS_3D_PHYSICS, "");
+	STAIRS_BIND(crowd_layers, Variant::INT, PROPERTY_HINT_LAYERS_3D_PHYSICS, "");
 
 #undef STAIRS_BIND
 

@@ -31,6 +31,9 @@
 #include <godot_cpp/variant/transform3d.hpp>
 #include <godot_cpp/variant/vector3.hpp>
 
+#include <utility>
+#include <vector>
+
 namespace godot {
 
 class StairsBody : public AnimatableBody3D {
@@ -46,6 +49,7 @@ public:
 	int max_slides = 4;
 	double safe_margin = 0.001;
 	uint32_t step_ignore_layers = 0;
+	uint32_t crowd_layers = 0;
 
 	Vector3 velocity;
 	Vector3 desired_velocity;
@@ -78,6 +82,12 @@ private:
 	// touches its floor and perhaps a wall or two; a mover among more than this many
 	// static contacts goes unseen until the body moves.
 	static constexpr int REST_QUERY_MAX = 8;
+	// Slack, beyond touching and beyond how far both may walk this frame, within which
+	// crowd members are listed as neighbours at the start of the frame. Covers a speed
+	// change of 3 m/s at 60 Hz since last frame.
+	static constexpr double CROWD_LOOKAHEAD = 0.05;
+	// Projection passes against the gathered neighbours.
+	static constexpr int CROWD_PASSES = 4;
 
 	// One contact the last move met; see _record_contact for which ones count.
 	struct Contact {
@@ -125,6 +135,50 @@ private:
 	RID _refused_rid;
 	double _refused_height = 0.0;
 
+	// Crowd separation: other StairsBody nodes on crowd_layers are pushed out of
+	// analytically rather than swept against. The footprint is a capsule in the
+	// horizontal plane, in the body's own frame, measured from its shapes once.
+	bool _footprint_known = false;
+	double _foot_radius = 0.0;
+	double _foot_half_length = 0.0;
+	Vector3 _foot_axis;
+	Vector3 _foot_centre;
+	double _foot_bottom = 0.0;
+	double _foot_top = 0.0;
+	RID _space;
+	// This move's crowd neighbours, frozen where they stood when it began.
+	struct Neighbour {
+		uint64_t id = 0;
+		Vector3 centre;
+		Vector3 axis;
+		double radius = 0.0;
+		double floor_y = 0.0;
+		double bottom = 0.0;
+		double top = 0.0;
+	};
+	LocalVector<Neighbour> _neighbours;
+	// This body's own footprint in world space, as of the start of the move.
+	Neighbour _me;
+	// The crowd pass's push for this body, taken by its next move.
+	Vector3 _crowd_pending;
+	// This body's place in the crowd snapshot, or UINT32_MAX when not in it.
+	uint32_t _snap_index = UINT32_MAX;
+	// One member as the crowd pass read it at the start of the physics frame, and
+	// where its neighbours start in s_adjacent.
+	struct CrowdSnap {
+		StairsBody *body = nullptr;
+		Neighbour foot;
+		uint32_t layer = 0;
+		uint32_t crowd = 0;
+		RID space;
+		double reach = 0.0;
+		uint32_t first = 0;
+		uint32_t count = 0;
+	};
+	static std::vector<CrowdSnap> s_snap;
+	static std::vector<std::pair<uint32_t, uint32_t>> s_pairs;
+	static std::vector<uint32_t> s_adjacent;
+
 	// A still body on a still, static floor skips its checks until something about it
 	// changes; see _resting. Where it came to rest, and where its floor was then.
 	bool _rest_valid = false;
@@ -137,6 +191,12 @@ private:
 	double _step_rise = 0.0;
 
 	void _clear_contacts();
+	void _measure_footprint();
+	static void _crowd_frame();
+	static double _foot_gap(const Neighbour &p_a, const Vector3 &p_a_shift, const Neighbour &p_b, const Vector3 &p_b_shift, Vector3 &r_normal);
+	Neighbour _foot_world(const Transform3D &p_xform) const;
+	bool _crowd_gather();
+	Vector3 _crowd_solve(const Vector3 &p_motion);
 	bool _still() const;
 	bool _resting();
 	bool _touched_by_mover();
@@ -172,6 +232,7 @@ private:
 
 protected:
 	static void _bind_methods();
+	void _notification(int p_what);
 
 public:
 	StairsBody();
@@ -207,6 +268,8 @@ public:
 	double get_safe_margin() const { return safe_margin; }
 	void set_step_ignore_layers(uint32_t p_value) { step_ignore_layers = p_value; }
 	uint32_t get_step_ignore_layers() const { return step_ignore_layers; }
+	void set_crowd_layers(uint32_t p_value) { crowd_layers = p_value; }
+	uint32_t get_crowd_layers() const { return crowd_layers; }
 	void set_velocity(const Vector3 &p_value) { velocity = p_value; }
 	Vector3 get_velocity() const { return velocity; }
 	void set_desired_velocity(const Vector3 &p_value) { desired_velocity = p_value; }

@@ -14,6 +14,13 @@ extends Node3D
 ##
 ## runs the same bodies with nothing wished, standing still where they spawned, apart:
 ## a crowd waiting, the case a resting body skips its checks for.
+##
+##     godot --headless --path <repo root> res://test/bench_pile.tscn -- --crowd
+##
+## keeps the bodies apart by crowd separation instead: their own layer leaves their
+## masks and goes in crowd_layers. Besides the time, a run prints the mean speed,
+## the mean distance from the centre, which says how tight the pile packed, and how
+## deep bodies sit inside each other, by the physics server's own depenetration.
 
 const BODIES: int = 96
 const PER_RING: int = 24
@@ -28,6 +35,7 @@ const CROWD_LAYER: int = 32
 
 var _bodies: Array[StairsBody] = []
 var _wish_speed: float = 0.0 if OS.get_cmdline_user_args().has("--idle") else WISH
+var _crowd: bool = OS.get_cmdline_user_args().has("--crowd")
 
 
 func _ready() -> void:
@@ -58,19 +66,55 @@ func _run() -> void:
 		if f >= TIMED_FROM:
 			total += Time.get_ticks_usec() - started
 	var speed: float = 0.0
+	var spread: float = 0.0
 	for body: StairsBody in _bodies:
 		speed += Vector2(body.velocity.x, body.velocity.z).length()
+		spread += Vector2(body.global_position.x, body.global_position.z).length()
+	var overlap: Vector2 = _overlap()
 	print(
-		"piled %.2f us per body per frame, mean speed %.2f m/s"
-		% [float(total) / float((FRAMES - TIMED_FROM) * BODIES), speed / float(BODIES)]
+		(
+			"piled %.2f us per body per frame, mean speed %.2f m/s, mean distance from centre %.3f m,"
+			+ " overlap mean %.1f mm max %.1f mm"
+		)
+		% [
+			float(total) / float((FRAMES - TIMED_FROM) * BODIES),
+			speed / float(BODIES),
+			spread / float(BODIES),
+			overlap.x * 1000.0,
+			overlap.y * 1000.0,
+		]
 	)
 	get_tree().quit()
+
+
+## How deep each body sits inside the others, by the physics server's own
+## depenetration: mean and max, in metres. Outside the timed region.
+func _overlap() -> Vector2:
+	var params: PhysicsTestMotionParameters3D = PhysicsTestMotionParameters3D.new()
+	params.recovery_as_collision = true
+	params.margin = 0.001
+	var result: PhysicsTestMotionResult3D = PhysicsTestMotionResult3D.new()
+	var total: float = 0.0
+	var deepest: float = 0.0
+	for body: StairsBody in _bodies:
+		var mask: int = body.collision_mask
+		body.collision_mask = CROWD_LAYER
+		params.from = body.global_transform
+		var depth: float = 0.0
+		if PhysicsServer3D.body_test_motion(body.get_rid(), params, result):
+			depth = result.get_travel().length()
+		body.collision_mask = mask
+		total += depth
+		deepest = maxf(deepest, depth)
+	return Vector2(total / float(BODIES), deepest)
 
 
 func _spawn(at: Vector3) -> StairsBody:
 	var body: StairsBody = StairsBody.new()
 	body.collision_layer = CROWD_LAYER
-	body.collision_mask = WORLD_LAYER | CROWD_LAYER
+	body.collision_mask = WORLD_LAYER if _crowd else WORLD_LAYER | CROWD_LAYER
+	if _crowd:
+		body.crowd_layers = CROWD_LAYER
 	body.step_ignore_layers = CROWD_LAYER
 	body.step_height = 0.06
 	body.step_down_height = 0.06

@@ -20,6 +20,10 @@ const EPS: float = 0.05
 const HIGH_RATE: int = 240
 const SLOW_WALK: float = 0.2
 const STEP_TOP: float = 0.2
+const CROWD_LAYER: int = 32
+## How far crowd footprints may end from exactly touching, or a crowd body past a
+## wall face, in metres.
+const CROWD_TOLERANCE: float = 0.005
 
 var _passed: int = 0
 var _failed: int = 0
@@ -53,6 +57,9 @@ func _run_all() -> void:
 	await _case_b21_standing_on_an_ignored_body_stays_on_the_floor()
 	await _case_b22_a_resting_body_wakes_when_its_floor_or_place_changes()
 	await _case_b25_a_resting_body_lists_what_moves_into_it()
+	await _case_b23_crowd_bodies_walking_head_on_stop_touching()
+	await _case_b24_a_crowd_push_never_shoves_a_body_into_a_wall()
+	await _case_b26_a_crowd_member_freed_or_added_mid_frame_is_skipped()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -1032,6 +1039,129 @@ func _case_b25_a_resting_body_lists_what_moves_into_it() -> void:
 		"b25 a resting body lists what moves into it",
 		listed >= 0,
 		"walker listed at %d of %d contacts" % [listed, c.get_contact_count()],
+	)
+	world.queue_free()
+
+
+## A body on CROWD_LAYER that leaves that layer out of its mask and keeps apart
+## from others on it by crowd separation.
+func _add_crowd_body(world: Node3D, at: Vector3) -> StairsBody:
+	var c: StairsBody = StairsBody.new()
+	c.collision_layer = CROWD_LAYER
+	c.collision_mask = 1
+	c.crowd_layers = CROWD_LAYER
+	return _add_body(world, at, c)
+
+
+## Crowd bodies do not collide, so only separation stops two walking into each
+## other: they stop with their footprints touching, never overlapping on the way,
+## and each lists the other, its normal pointing back at the lister, as a physics
+## contact would. They close 10 cm a tick, twice the neighbour lookahead, and
+## start 7 cm past a whole number of ticks apart, so no tick lands them touching.
+func _case_b23_crowd_bodies_walking_head_on_stop_touching() -> void:
+	const SPEED: float = 3.0
+	const TICKS: int = 90
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(20.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	var a: StairsBody = _add_crowd_body(world, Vector3(-1.0, REST_Y, 0.0))
+	var b: StairsBody = _add_crowd_body(world, Vector3(1.07, REST_Y, 0.0))
+	var closest: float = INF
+	for _i: int in TICKS:
+		await get_tree().physics_frame
+		for pair: Array in [[a, 1.0], [b, -1.0]]:
+			var c: StairsBody = pair[0]
+			var walk: float = pair[1] * SPEED
+			c.velocity = Vector3(walk, c.velocity.y - GRAVITY * DELTA, 0.0)
+			c.desired_velocity = Vector3(walk, 0.0, 0.0)
+			c.move_and_stair_step()
+		closest = minf(closest, b.global_position.x - a.global_position.x)
+	var apart: float = b.global_position.x - a.global_position.x
+	var a_lists: int = _find_contact(a, b, Vector3.LEFT)
+	var b_lists: int = _find_contact(b, a, Vector3.RIGHT)
+
+	_check(
+		"b23 crowd bodies walking head-on stop touching",
+		(
+			absf(apart - 2.0 * BODY_RADIUS) < CROWD_TOLERANCE
+			and closest > 2.0 * BODY_RADIUS - CROWD_TOLERANCE and a_lists >= 0 and b_lists >= 0
+		),
+		"%.4f m apart expected %.2f, closest %.4f, a lists b at %d, b lists a at %d"
+		% [apart, 2.0 * BODY_RADIUS, closest, a_lists, b_lists],
+	)
+	world.queue_free()
+
+
+## A body left overlapping another that rests against a wall: separation pushes
+## both apart, and each push is carried by its own body's next move, so it is swept
+## against the world. The one at the wall stays out of it and the other takes the
+## whole of the gap.
+func _case_b24_a_crowd_push_never_shoves_a_body_into_a_wall() -> void:
+	const OVERLAP: float = 0.2
+	const REST: int = 20
+	const TICKS: int = 10
+	const WALL_FACE: float = 0.5
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(20.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	_add_box(world, Vector3(1.0, 3.0, 8.0), Vector3(WALL_FACE + 0.5, 1.5, 0.0))
+	var at_wall: StairsBody = _add_crowd_body(world, Vector3(WALL_FACE - BODY_RADIUS, REST_Y, 0.0))
+	await _hold_still(at_wall, REST)
+	var shoved: StairsBody = _add_crowd_body(
+		world,
+		Vector3(WALL_FACE - 3.0 * BODY_RADIUS + OVERLAP, REST_Y, 0.0),
+	)
+	for _i: int in TICKS:
+		await get_tree().physics_frame
+		for c: StairsBody in [at_wall, shoved]:
+			c.velocity = Vector3(0.0, c.velocity.y - GRAVITY * DELTA, 0.0)
+			c.move_and_stair_step()
+	var wall_side: float = at_wall.global_position.x + BODY_RADIUS
+	var apart: float = at_wall.global_position.x - shoved.global_position.x
+
+	_check(
+		"b24 a crowd push never shoves a body into a wall",
+		wall_side < WALL_FACE + CROWD_TOLERANCE and apart > 2.0 * BODY_RADIUS - CROWD_TOLERANCE,
+		"side at x=%.4f against a face at %.2f, %.4f m apart expected >= %.2f"
+		% [wall_side, WALL_FACE, apart, 2.0 * BODY_RADIUS],
+	)
+	world.queue_free()
+
+
+## The crowd pass reads every member once per physics frame. A member freed after
+## that, or added after it, must not be read by others moving later in the same
+## frame: the freed one would be a dangling read.
+func _case_b26_a_crowd_member_freed_or_added_mid_frame_is_skipped() -> void:
+	const OVERLAP: float = 0.2
+	const TICKS: int = 5
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(20.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	var stays: StairsBody = _add_crowd_body(world, Vector3(0.0, REST_Y, 0.0))
+	var freed: StairsBody = _add_crowd_body(
+		world,
+		Vector3(2.0 * BODY_RADIUS - OVERLAP, REST_Y, 0.0),
+	)
+	await get_tree().physics_frame
+	var counter: ErrorCounter = ErrorCounter.new()
+	OS.add_logger(counter)
+	stays.move_and_stair_step()
+	freed.free()
+	var added: StairsBody = _add_crowd_body(
+		world,
+		Vector3(-2.0 * BODY_RADIUS + OVERLAP, REST_Y, 0.0),
+	)
+	stays.move_and_stair_step()
+	added.move_and_stair_step()
+	for _i: int in TICKS:
+		await get_tree().physics_frame
+		for c: StairsBody in [stays, added]:
+			c.velocity = Vector3(0.0, c.velocity.y - GRAVITY * DELTA, 0.0)
+			c.move_and_stair_step()
+	OS.remove_logger(counter)
+	var apart: float = stays.global_position.x - added.global_position.x
+
+	_check(
+		"b26 a crowd member freed or added mid-frame is skipped",
+		counter.errors == 0 and absf(apart - 2.0 * BODY_RADIUS) < CROWD_TOLERANCE,
+		"%d engine errors, %.4f m apart expected %.2f" % [counter.errors, apart, 2.0 * BODY_RADIUS],
 	)
 	world.queue_free()
 
