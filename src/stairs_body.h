@@ -73,6 +73,9 @@ private:
 	// than resting on it, and _settle pushes it back out. A resting contact recovers
 	// under one margin on both engines (measured 0.75 on Jolt, 0.81 on Godot Physics).
 	static constexpr double EMBED_MARGINS = 4.0;
+	// How far a grounded body may move on a static floor, sweeping into nothing,
+	// before the post-move test runs again; see _settle_reused.
+	static constexpr double SETTLE_REACH = 0.01;
 	// Cosine above which the step probe counts as along the motion rather than off it.
 	static constexpr double PARALLEL = 0.9999;
 	// Cosine of 15 degrees, CharacterBody3D's default wall_min_slide_angle: a grounded
@@ -208,6 +211,12 @@ private:
 	// How far the last settle test's recovery moved the body. Past EMBED_MARGINS of
 	// them the body is inside something, not resting on it, and does not rest.
 	double _settle_depth = 0.0;
+	// What the last post-move test found, while it may stand in for the next ones:
+	// where the body was, and the contacts it listed. See _settle_reused.
+	bool _settle_reusable = false;
+	Vector3 _settle_origin;
+	Transform3D _settle_floor_transform;
+	LocalVector<Contact> _settle_contacts;
 
 	// Where a successful step left the body, and how far it rose. Written by _step_sweeps;
 	// the rise is announced once the move is final, since a re-slide can redo the step.
@@ -237,7 +246,10 @@ private:
 	bool _intent_step(const Transform3D &p_from, const Vector3 &p_probe, double p_reach);
 	Kind _classify(const Vector3 &p_normal);
 	void _record_floor(const Vector3 &p_normal, int p_index = 0);
+	bool _settle_reused(const Vector3 &p_motion, uint32_t p_slide_contacts);
 	bool _settle();
+	bool _settle_masked();
+	void _record_shapes();
 	bool _settle_test();
 	double _unblocked_fraction(const Transform3D &p_from, const Vector3 &p_motion);
 	static Vector3 _clip(const Vector3 &p_remainder, const Vector3 &p_normal, const Vector3 &p_previous_normal);

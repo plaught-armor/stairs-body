@@ -157,8 +157,9 @@ void StairsBody::move_and_stair_step() {
 	_last_wall = _on_wall ? _wall_normal : Vector3();
 	_clear_contacts();
 	_slide(motion, may_step, delta, false);
-	if (_settle()) {
+	if (!_settle_reused(motion, carried_contacts) && _settle()) {
 		// A sweep went through something. Redo the move checking every sweep.
+		_settle_reusable = false;
 		set_global_transform(start);
 		velocity = start_velocity;
 		_contacts.resize(carried_contacts);
@@ -577,6 +578,11 @@ void StairsBody::_mark_rest(bool p_still) {
 	}
 	_rest_transform = get_global_transform();
 	_rest_floor_transform = physics()->body_get_state(_floor_rid, PhysicsServer3D::BODY_STATE_TRANSFORM);
+	_record_shapes();
+}
+
+// The body's shapes as the physics server has them, for _shapes_unchanged.
+void StairsBody::_record_shapes() {
 	const RID rid = get_rid();
 	const int count = physics()->body_get_shape_count(rid);
 	_rest_shapes.resize(count);
@@ -639,6 +645,7 @@ void StairsBody::_watch_shapes() {
 // the next move runs its checks.
 void StairsBody::_on_shape_changed() {
 	_rest_valid = false;
+	_settle_reusable = false;
 }
 
 void StairsBody::_clear_contacts() {
@@ -865,6 +872,38 @@ void StairsBody::_record_floor(const Vector3 &p_normal, int p_index) {
 	_platform_velocity = _result->get_collider_velocity(p_index);
 }
 
+// Stands in for the post-move test where it cannot find anything new: grounded on
+// a static floor, a move whose sweeps met nothing, within SETTLE_REACH of where
+// the test last ran and found that floor and the body resting on it. The test's
+// floor and contacts are kept, the contacts moved with the body. Unreal's
+// FindFloor reuses the last floor the same way, off a static base, though only
+// for a body that has not moved; Jolt's CharacterVirtual goes further and keeps
+// the contacts of a query made before the move. Within the reach, a floor edge
+// can come under the body unseen, so walking slowly off a ledge it overhangs the
+// edge by up to SETTLE_REACH more before it drops. Past it, the test runs again.
+bool StairsBody::_settle_reused(const Vector3 &p_motion, uint32_t p_slide_contacts) {
+	const Vector3 origin = get_global_position();
+	const Vector3 moved = origin - _settle_origin;
+	if (!_settle_reusable || p_motion.y != 0.0 || moved.y != 0.0 || _step_rise > 0.0 ||
+			_contacts.size() != p_slide_contacts || moved.length() > SETTLE_REACH ||
+			_platform_velocity != Vector3()) {
+		return false;
+	}
+	// What the rest skip checks too: neither the body's collider nor its floor has
+	// changed, and nothing that moves touches it.
+	if (!_shapes_unchanged() || !UtilityFunctions::is_instance_id_valid(_floor_id) ||
+			Transform3D(physics()->body_get_state(_floor_rid, PhysicsServer3D::BODY_STATE_TRANSFORM)) != _settle_floor_transform ||
+			_touched_by_mover()) {
+		return false;
+	}
+	_on_floor = true;
+	for (Contact contact : _settle_contacts) {
+		contact.position += moved;
+		_contacts.push_back(contact);
+	}
+	return true;
+}
+
 // One zero-motion test after the move, for two jobs. Returns whether the body
 // ended up inside something, leaving the contact state alone when it did.
 //
@@ -895,7 +934,32 @@ void StairsBody::_record_floor(const Vector3 &p_normal, int p_index) {
 // redo the move: the guard is for the static geometry Jolt's filter lets a sweep
 // pass through, and a body overlapping a neighbour is pushed out by the recovery
 // of its next unmasked sweep, which in a crowd pressed together is every move.
+//
+// Keeps what it found for _settle_reused while the body rests on a static floor.
 bool StairsBody::_settle() {
+	const uint32_t first = _contacts.size();
+	const bool embedded = _settle_masked();
+	_settle_reusable = !embedded && _on_floor && _floor_rid.is_valid() && _platform_velocity == Vector3() &&
+			_settle_depth <= safe_margin * EMBED_MARGINS &&
+			physics()->body_get_mode(_floor_rid) == PhysicsServer3D::BODY_MODE_STATIC;
+	if (_settle_reusable) {
+		_settle_origin = get_global_position();
+		_settle_floor_transform = physics()->body_get_state(_floor_rid, PhysicsServer3D::BODY_STATE_TRANSFORM);
+		if (!_shapes_unchanged()) {
+			// A new set of shapes: watched, so resizing one in place ends the reuse too.
+			_record_shapes();
+			_watch_shapes();
+		}
+		_settle_contacts.clear();
+		for (uint32_t i = first; i < _contacts.size(); i++) {
+			_settle_contacts.push_back(_contacts[i]);
+		}
+	}
+	return embedded;
+}
+
+// The test itself, masked first as described above _settle.
+bool StairsBody::_settle_masked() {
 	if (step_ignore_layers == 0) {
 		return _settle_test();
 	}

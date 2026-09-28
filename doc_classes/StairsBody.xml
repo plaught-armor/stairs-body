@@ -10,7 +10,8 @@
 		A body at rest skips its checks: with no [member velocity] and no [member desired_velocity], on a static floor that carries it nowhere, it makes one shape query per move in their place while neither it nor its floor has moved and nothing that could move into it touches it, and the getters keep the last move's answers. Static bodies, [StairsBody] nodes that collide with it and crowd neighbours are passed over, since none of them can move into it. A change to its own collider, such as a crouch resizing, moving or switching off a shape, wakes it, and a body that starts inside something only rests once it is out. [member velocity] has to be exactly zero.
 		Physics queries per frame, the budget this class is built around:
 		[codeblock lang=text]
-		walking on flat ground   2   (the move sweep, the contact test)
+		walking on flat ground   2   (the move sweep, the contact test; within 1 cm of the
+		                              last one on a static floor, a shape query instead)
 		standing still           1   (a shape query, once at rest on a static floor)
 		pressed into a wall      2   (the same two; the step attempt is cached)
 		intent off the motion   +1   (a sweep along intent, which only looks for a step;

@@ -31,7 +31,11 @@ not have helped much. The only way to get cheaper was to run fewer queries.
 `move_and_slide` with its own slide loop and makes the step check part of it:
 
 - The main sweep doubles as the step probe.
-- One zero-motion test finds floor contact and catches tunnelling.
+- One zero-motion test finds floor contact and catches tunnelling. A grounded
+  body on a static floor whose move met nothing keeps that test's floor for the
+  next centimetre of travel, checking only that nothing moving touches it (see
+  `SETTLE_REACH`). Walking slowly off a ledge, it can overhang the edge by up to
+  that centimetre more before it drops.
 - Gravity is not swept into the floor while the body stands on it; the floor
   probe keeps it down.
 - A wall that refused a step is remembered, so pressing into it costs nothing
@@ -39,7 +43,7 @@ not have helped much. The only way to get cheaper was to run fewer queries.
 
 | Situation | Queries per frame |
 |---|---|
-| Walking on flat ground | 2 (the move sweep, the contact test) |
+| Walking on flat ground | 2 (the move sweep, the contact test; within 1 cm of the last contact test on a static floor, a shape query in its place) |
 | Standing still on a static floor | 1 shape query once at rest (see below) |
 | Pressed into a wall | 2 (the refused step is cached) |
 | Intent off the motion | +1 (a sweep along intent that only looks for a step), only standing still or against a face intent pushes into |
@@ -362,8 +366,8 @@ Neighbours touched are listed in the [contact list](#contacts), with the other
 member as collider and a horizontal normal pointing back at this body, and
 velocity is clipped against them.
 
-`test/bench_pile.gd -- --crowd`, 96 box-shaped bodies pressed into a pile, costs 17.6
-µs per body on Godot Physics and 10.3 on Jolt, against 47 and 32 with collision. Of
+`test/bench_pile.gd -- --crowd`, 96 box-shaped bodies pressed into a pile, costs 13.7
+µs per body on Godot Physics and 9.8 on Jolt, against 47 and 32 with collision. Of
 that, the separation itself is under 3 µs; the rest is the sweeps against the
 floor. The same bodies standing apart and still cost what they cost without it.
 

@@ -65,6 +65,7 @@ func _run_all() -> void:
 	await _case_b29_a_resting_body_is_checked_again_when_its_collider_changes()
 	await _case_b30_crowd_overlap_under_the_slop_is_left_alone()
 	await _case_b31_held_still_at_a_step_with_intent_into_it_climbs()
+	await _case_b32_a_slow_walk_off_a_ledge_drops_within_the_settle_reach()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -1382,3 +1383,46 @@ func _case_b31_held_still_at_a_step_with_intent_into_it_climbs() -> void:
 		"rose %.3f m, expected %.3f" % [rose, STEP_TOP],
 	)
 	world.queue_free()
+
+
+## A grounded body moving a little on a static floor, sweeping into nothing, keeps
+## the last post-move test's floor rather than testing again, until it is
+## SETTLE_REACH from where that test ran. Walking slowly off a ledge, it may overhang
+## the edge by that much more before it drops, and no more. Three slow walks off a
+## 0.1 m ledge each drop within the reach, plus one frame's travel, of where the
+## footprint leaves the edge.
+func _case_b32_a_slow_walk_off_a_ledge_drops_within_the_settle_reach() -> void:
+	# SETTLE_REACH in src/stairs_body.h; retune both together.
+	const REACH: float = 0.01
+	const DROP: float = 0.1
+	const SLACK: float = 0.002
+	const MAX_TICKS: int = 600
+	var late: PackedStringArray = []
+	for speed: float in [0.05, 0.2, 0.6]:
+		var world: Node3D = _new_world()
+		_add_box(world, Vector3(4.0, 1.0, 4.0), Vector3(-2.0, -0.5, 0.0))
+		_add_box(world, Vector3(4.0, 1.0, 4.0), Vector3(2.0, -0.5 - DROP, 0.0))
+		var c: StairsBody = _add_body(world, Vector3(-0.02, REST_Y, 0.0))
+		for _i: int in 15:
+			await get_tree().physics_frame
+			c.velocity.y -= GRAVITY * DELTA
+			c.move_and_stair_step()
+		var dropped_at: float = INF
+		for _i: int in MAX_TICKS:
+			await get_tree().physics_frame
+			c.velocity = Vector3(speed, c.velocity.y - GRAVITY * DELTA, 0.0)
+			c.desired_velocity = Vector3(speed, 0.0, 0.0)
+			c.move_and_stair_step()
+			if c.global_position.y < REST_Y - DROP * 0.5:
+				dropped_at = c.global_position.x
+				break
+		var bound: float = BODY_RADIUS + REACH + speed * DELTA + SLACK
+		if dropped_at > bound:
+			late.append("%.2f m/s at x=%.4f past %.4f" % [speed, dropped_at, bound])
+		world.queue_free()
+
+	_check(
+		"b32 a slow walk off a ledge drops within the settle reach",
+		late.is_empty(),
+		"late: %s" % [late],
+	)
