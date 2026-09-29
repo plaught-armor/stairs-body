@@ -36,12 +36,17 @@ extends Node3D
 ##
 ## `--turn-after` turns each body toward its wish after its move rather than before,
 ## and `--seed N` jitters where the bodies spawn, for sweeps over several piles.
+## `--settle` stops every body SETTLE_FRAMES before the timed frames, its horizontal
+## velocity snapped to zero, so the timed frames measure a pile at rest. With
+## `--every` it takes at most SETTLE_FRAMES, or the pile stops before it has formed.
 
 const BODIES: int = 96
 const PER_RING: int = 24
 const FRAMES: int = 300
 const TIMED_FROM: int = 150
 const WISH: float = 2.2
+# Frames a --settle pile stands still before timing starts.
+const SETTLE_FRAMES: int = 30
 # Share of the gap to the wished velocity closed per tick.
 const ACCEL: float = 0.15
 const GRAVITY_STEP: float = 0.16
@@ -62,6 +67,7 @@ var _every: int = _flag_int("--every", 1)
 var _accel: float = 1.0 - pow(1.0 - ACCEL, float(_every))
 var _turn_after: bool = OS.get_cmdline_user_args().has("--turn-after")
 var _seed: int = _flag_int("--seed", -1)
+var _settle: bool = OS.get_cmdline_user_args().has("--settle")
 
 
 func _ready() -> void:
@@ -103,6 +109,10 @@ func _run() -> void:
 	var total: int = 0
 	for f: int in FRAMES:
 		await get_tree().physics_frame
+		if _settle and f == TIMED_FROM - SETTLE_FRAMES:
+			_wish_speed = 0.0
+			for body: StairsBody in _bodies:
+				body.velocity = Vector3(0.0, body.velocity.y, 0.0)
 		var started: int = Time.get_ticks_usec()
 		for i: int in _bodies.size():
 			if (f + i) % _every == 0:
@@ -201,6 +211,8 @@ func _bad_flag() -> String:
 			return "%s needs a whole number after it" % flag
 	if _every < 1 or _every > FRAMES - TIMED_FROM:
 		return "--every needs 1 to %d, so every body moves while timed" % (FRAMES - TIMED_FROM)
+	if _settle and _every > SETTLE_FRAMES:
+		return "--settle takes --every up to %d, so the pile forms before it stops" % SETTLE_FRAMES
 	if args.has("--seed") and _seed < 0:
 		return "--seed needs 0 or more"
 	return ""
@@ -222,6 +234,8 @@ func _step(body: StairsBody) -> void:
 	if distance > 0.05:
 		wish = to_centre * (_wish_speed / distance)
 	var walk: Vector3 = (body.velocity * Vector3(1.0, 0.0, 1.0)).lerp(wish, _accel)
+	if _wish_speed == 0.0:
+		walk = Vector3.ZERO
 	body.velocity = Vector3(walk.x, body.velocity.y - GRAVITY_STEP * float(_every), walk.z)
 	body.desired_velocity = wish
 	if wish != Vector3.ZERO and not _turn_after:

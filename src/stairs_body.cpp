@@ -49,6 +49,7 @@ int64_t cell_key(int64_t p_x, int64_t p_z) {
 } // namespace
 
 std::vector<StairsBody::CrowdSnap> StairsBody::s_snap;
+std::vector<StairsBody::Foot> StairsBody::s_foot;
 std::vector<std::pair<uint32_t, uint32_t>> StairsBody::s_pairs;
 std::vector<uint32_t> StairsBody::s_adjacent;
 
@@ -129,7 +130,7 @@ bool StairsBody::_walk_on_grid(double p_delta) {
 		_measure_footprint();
 		ERR_FAIL_COND_V_MSG(!_footprint_known, false, "StairsBody has no shapes to walk the grid with.");
 	}
-	const Neighbour foot = _foot_world(get_global_transform());
+	const Foot foot = _foot_world(get_global_transform());
 	const Vector3 saved_velocity = velocity;
 	const Vector3 saved_pending = _crowd_pending;
 	_contacts.clear();
@@ -188,7 +189,7 @@ Vector3 StairsBody::_grid_intent_probe(const Vector3 &p_motion, double p_delta) 
 // stands on. Otherwise the body stays where it is, and `r_hit` still says whether
 // the probe met a wall, as a body held against a face is on it with the sweeps.
 // Returns false when the body starts inside a box.
-bool StairsBody::_grid_intent_step(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_probe, double p_floor, Vector3 &r_shift, bool &r_hit) {
+bool StairsBody::_grid_intent_step(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_probe, double p_floor, Vector3 &r_shift, bool &r_hit) {
 	if (!_grid_sweep(p_grid, p_foot, p_probe, r_shift, r_hit)) {
 		return false;
 	}
@@ -207,7 +208,7 @@ bool StairsBody::_grid_intent_step(const StairsWalkGrid &p_grid, const Neighbour
 // passed over, then bisects to the last clear point. A body already nearer a box
 // than safe_margin may move but not come nearer. Returns false when the body
 // starts inside such a box.
-bool StairsBody::_grid_sweep(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_motion, Vector3 &r_shift, bool &r_hit) {
+bool StairsBody::_grid_sweep(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_motion, Vector3 &r_shift, bool &r_hit) {
 	const double above = p_foot.bottom + step_height + GRID_SLACK;
 	const double below = p_foot.top;
 	Vector3 normal;
@@ -259,7 +260,7 @@ bool StairsBody::_grid_sweep(const StairsWalkGrid &p_grid, const Neighbour &p_fo
 // The highest top among the grid's boxes under the footprint moved by `shift`
 // that the body can stand on from where it is: no higher than a step above its
 // feet. Returns false when there is none.
-bool StairsBody::_grid_floor(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double &r_floor, uint32_t &r_box) const {
+bool StairsBody::_grid_floor(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_shift, double &r_floor, uint32_t &r_box) const {
 	const Vector3 a = p_foot.centre + p_shift - p_foot.axis;
 	const Vector3 b = p_foot.centre + p_shift + p_foot.axis;
 	const double reach_up = p_foot.bottom + step_height + GRID_SLACK;
@@ -284,7 +285,7 @@ bool StairsBody::_grid_floor(const StairsWalkGrid &p_grid, const Neighbour &p_fo
 // grid's boxes on the body's mask that reach above `above` and below `below`,
 // with the normal from and nearest point of the nearest one, or +inf when there
 // are none.
-double StairsBody::_grid_nearest(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double p_above, double p_below, Vector3 &r_normal, uint32_t &r_box, Vector3 &r_point) const {
+double StairsBody::_grid_nearest(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_shift, double p_above, double p_below, Vector3 &r_normal, uint32_t &r_box, Vector3 &r_point) const {
 	const Vector3 a = p_foot.centre + p_shift - p_foot.axis;
 	const Vector3 b = p_foot.centre + p_shift + p_foot.axis;
 	const uint32_t mask = get_collision_mask();
@@ -314,7 +315,7 @@ double StairsBody::_grid_nearest(const StairsWalkGrid &p_grid, const Neighbour &
 // does not touch it, as with the sweeps, which leave it a margin or more away,
 // unless intent holds it there: then a wall within `held_reach` is touched. A
 // step up or down past STEP_DOWN_SIGNAL_MIN is announced.
-void StairsBody::_grid_commit(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double p_floor, uint32_t p_floor_box, bool p_hit, double p_held_reach) {
+void StairsBody::_grid_commit(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_shift, double p_floor, uint32_t p_floor_box, bool p_hit, double p_held_reach) {
 	Transform3D xform = get_global_transform();
 	xform.origin += p_shift;
 	xform.origin.y += p_floor - p_foot.bottom;
@@ -381,7 +382,7 @@ void StairsBody::_crowd_publish() {
 			g_crowd_frame != Engine::get_singleton()->get_physics_frames()) {
 		return;
 	}
-	Neighbour &foot = s_snap[_snap_index].foot;
+	Foot &foot = s_foot[_snap_index];
 	foot = _foot_world(get_global_transform());
 	foot.centre += _crowd_pending;
 }
@@ -570,9 +571,8 @@ void StairsBody::_measure_footprint() {
 }
 
 // This body's footprint where `xform` puts it, in the form a neighbour is kept.
-StairsBody::Neighbour StairsBody::_foot_world(const Transform3D &p_xform) const {
-	Neighbour n;
-	n.id = get_instance_id();
+StairsBody::Foot StairsBody::_foot_world(const Transform3D &p_xform) const {
+	Foot n;
 	n.axis = (p_xform.basis.xform(_foot_axis) * HORIZONTAL_MASK).normalized() * _foot_half_length;
 	n.centre = p_xform.xform(_foot_centre) * HORIZONTAL_MASK;
 	n.radius = _foot_radius;
@@ -585,9 +585,8 @@ StairsBody::Neighbour StairsBody::_foot_world(const Transform3D &p_xform) const 
 // Gap between footprints `a` and `b` shifted by `a_shift` and `b_shift`, negative
 // when they overlap, or +inf when they are stacked rather than side by side.
 // `r_normal` points from b to a.
-double StairsBody::_foot_gap(const Neighbour &p_a, const Vector3 &p_a_shift, const Neighbour &p_b, const Vector3 &p_b_shift, Vector3 &r_normal) {
-	const double overlap_y = MIN(p_a.top, p_b.top) - MAX(p_a.bottom, p_b.bottom);
-	if (overlap_y <= 0.5 * MIN(p_a.top - p_a.bottom, p_b.top - p_b.bottom)) {
+double StairsBody::_foot_gap(const Foot &p_a, const Vector3 &p_a_shift, const Foot &p_b, const Vector3 &p_b_shift, Vector3 &r_normal) {
+	if (_feet_stacked(p_a, p_b)) {
 		return INFINITY;
 	}
 	const Vector3 a = p_a.centre + p_a_shift;
@@ -609,7 +608,7 @@ double StairsBody::_foot_gap(const Neighbour &p_a, const Vector3 &p_a_shift, con
 // centres are further apart than both extents and `gap` together. Answers without
 // the segment test, as DetourCrowd rejects on squared distance before its square
 // root.
-bool StairsBody::_feet_apart(const Neighbour &p_a, const Vector3 &p_a_shift, const Neighbour &p_b, const Vector3 &p_b_shift, double p_gap) {
+bool StairsBody::_feet_apart(const Foot &p_a, const Vector3 &p_a_shift, const Foot &p_b, const Vector3 &p_b_shift, double p_gap) {
 	const double reach = p_a.extent + p_b.extent + p_gap;
 	return reach >= 0.0 && (p_a.centre + p_a_shift - p_b.centre - p_b_shift).length_squared() > reach * reach;
 }
@@ -627,6 +626,7 @@ void StairsBody::_crowd_frame() {
 	const uint32_t count = g_members.size();
 	const double frame_time = count > 0 ? g_members[0]->get_physics_process_delta_time() : 0.0;
 	s_snap.resize(count);
+	s_foot.resize(count);
 	double reach = 0.0;
 	for (uint32_t i = 0; i < count; i++) {
 		StairsBody *member = g_members[i];
@@ -635,10 +635,11 @@ void StairsBody::_crowd_frame() {
 		}
 		CrowdSnap &snap = s_snap[i];
 		snap.body = member;
-		snap.foot = member->_foot_world(member->get_global_transform());
+		snap.id = member->get_instance_id();
+		s_foot[i] = member->_foot_world(member->get_global_transform());
 		// A push the member has not yet taken, because it skipped its move, is still
 		// owed: count it as taken, and keep it for the member's next move.
-		snap.foot.centre += member->_crowd_pending;
+		s_foot[i].centre += member->_crowd_pending;
 		snap.layer = member->get_collision_layer();
 		snap.crowd = member->crowd_layers;
 		snap.space = member->_space;
@@ -658,7 +659,7 @@ void StairsBody::_crowd_frame() {
 		if (s_snap[i].crowd == 0) {
 			continue;
 		}
-		const Vector3 &at = s_snap[i].foot.centre;
+		const Vector3 &at = s_foot[i].centre;
 		g_grid[cell_key((int64_t)std::floor(at.x / cell), (int64_t)std::floor(at.z / cell))].push_back(i);
 	}
 
@@ -671,8 +672,8 @@ void StairsBody::_crowd_frame() {
 		if (a.crowd == 0) {
 			continue;
 		}
-		const int64_t cx = (int64_t)std::floor(a.foot.centre.x / cell);
-		const int64_t cz = (int64_t)std::floor(a.foot.centre.z / cell);
+		const int64_t cx = (int64_t)std::floor(s_foot[i].centre.x / cell);
+		const int64_t cz = (int64_t)std::floor(s_foot[i].centre.z / cell);
 		for (int64_t dx = -1; dx <= 1; dx++) {
 			for (int64_t dz = -1; dz <= 1; dz++) {
 				const auto found = g_grid.find(cell_key(cx + dx, cz + dz));
@@ -685,7 +686,7 @@ void StairsBody::_crowd_frame() {
 						continue;
 					}
 					const double near = a.reach + b.reach + CROWD_LOOKAHEAD;
-					if ((a.foot.centre - b.foot.centre).length_squared() > near * near) {
+					if ((s_foot[i].centre - s_foot[j].centre).length_squared() > near * near) {
 						continue;
 					}
 					s_adjacent.push_back(j);
@@ -705,11 +706,11 @@ void StairsBody::_crowd_frame() {
 		delta.assign(count, Vector3());
 		bool overlapped = false;
 		for (const std::pair<uint32_t, uint32_t> &pair : s_pairs) {
-			if (_feet_apart(s_snap[pair.first].foot, shift[pair.first], s_snap[pair.second].foot, shift[pair.second], -CROWD_SLOP)) {
+			if (_feet_apart(s_foot[pair.first], shift[pair.first], s_foot[pair.second], shift[pair.second], -CROWD_SLOP)) {
 				continue;
 			}
 			Vector3 normal;
-			const double gap = _foot_gap(s_snap[pair.first].foot, shift[pair.first], s_snap[pair.second].foot, shift[pair.second], normal);
+			const double gap = _foot_gap(s_foot[pair.first], shift[pair.first], s_foot[pair.second], shift[pair.second], normal);
 			if (gap >= -CROWD_SLOP) {
 				continue;
 			}
@@ -726,8 +727,17 @@ void StairsBody::_crowd_frame() {
 	}
 	for (uint32_t i = 0; i < count; i++) {
 		g_members[i]->_crowd_pending += shift[i];
-		s_snap[i].foot.centre += shift[i];
+		s_foot[i].centre += shift[i];
 	}
+}
+
+// Whether neighbour `n` is surely more than `gap` from this body's footprint moved
+// by `offset`, from the last gap measured to it: the gap then, less how far the
+// body has moved since, clears `gap` by CROWD_BOUND_MARGIN. Answers without the
+// segment test, and never where the test would say otherwise.
+bool StairsBody::_gap_surely_over(const Near &p_n, const Vector3 &p_offset, double p_gap) {
+	const double room = p_n.known_gap - p_gap - CROWD_BOUND_MARGIN;
+	return room > 0.0 && (p_offset - p_n.known_at).length_squared() < room * room;
 }
 
 // This move's crowd neighbours, where they stand now plus any push they have not
@@ -736,7 +746,7 @@ void StairsBody::_crowd_frame() {
 // member updates as it moves, so a member moved by other code during the frame is
 // seen where it stood when the frame began.
 bool StairsBody::_crowd_gather() {
-	_neighbours.clear();
+	_near.clear();
 	if (crowd_layers == 0) {
 		return false;
 	}
@@ -753,22 +763,29 @@ bool StairsBody::_crowd_gather() {
 	const CrowdSnap &mine = s_snap[_snap_index];
 	bool overlapping = false;
 	for (uint32_t k = mine.first; k < mine.first + mine.count; k++) {
-		const CrowdSnap &other = s_snap[s_adjacent[k]];
-		if (other.body == nullptr) {
+		const uint32_t index = s_adjacent[k];
+		if (s_snap[index].body == nullptr) {
 			continue;
 		}
-		Neighbour n = other.foot;
-		Vector3 normal;
-		const double gap = _foot_gap(_me, _crowd_pending, n, Vector3(), normal);
+		const Foot &other = s_foot[index];
 		// Stacked, not side by side. Anything nearer the pair list already bounds, by
 		// how far both may walk this frame.
-		if (std::isinf(gap)) {
+		if (_feet_stacked(_me, other)) {
 			continue;
 		}
-		n.floor_y = MAX(_me.bottom, n.bottom);
-		n.least_gap = gap >= -CROWD_SLOP ? MIN(gap, 0.0) : 0.0;
-		overlapping = overlapping || gap < -CROWD_SLOP;
-		_neighbours.push_back(n);
+		Near n;
+		n.index = index;
+		// Apart by more than both extents, the gap is surely positive and the segment
+		// test would only confirm it.
+		if (!_feet_apart(_me, _crowd_pending, other, Vector3(), 0.0)) {
+			Vector3 normal;
+			const double gap = _foot_gap(_me, _crowd_pending, other, Vector3(), normal);
+			n.least_gap = gap >= -CROWD_SLOP ? MIN(gap, 0.0) : 0.0;
+			n.known_gap = gap;
+			n.known_at = _crowd_pending;
+			overlapping = overlapping || gap < -CROWD_SLOP;
+		}
+		_near.push_back(n);
 	}
 	return overlapping || _crowd_pending != Vector3();
 }
@@ -799,19 +816,20 @@ Vector3 StairsBody::_crowd_solve(const Vector3 &p_motion) {
 	}
 	_crowd_pending = Vector3();
 	const double touch = safe_margin + walk.length() * (1.0 - share);
-	for (const Neighbour &n : _neighbours) {
-		if (_feet_apart(_me, offset, n, Vector3(), touch)) {
+	for (const Near &n : _near) {
+		const Foot &other = s_foot[n.index];
+		if (_feet_apart(_me, offset, other, Vector3(), touch) || _gap_surely_over(n, offset, touch)) {
 			continue;
 		}
 		Vector3 normal;
-		const double gap = _foot_gap(_me, offset, n, Vector3(), normal);
+		const double gap = _foot_gap(_me, offset, other, Vector3(), normal);
 		if (gap > touch) {
 			continue;
 		}
 		Contact contact;
-		contact.collider_id = n.id;
+		contact.collider_id = s_snap[n.index].id;
 		contact.normal = normal;
-		contact.position = _me.centre + offset - normal * (_foot_radius + MAX(gap, 0.0)) + Vector3(0, n.floor_y, 0);
+		contact.position = _me.centre + offset - normal * (_foot_radius + MAX(gap, 0.0)) + Vector3(0, MAX(_me.bottom, other.bottom), 0);
 		_contacts.push_back(contact);
 		if (velocity.dot(normal) < 0.0) {
 			velocity = velocity.slide(normal);
@@ -822,15 +840,20 @@ Vector3 StairsBody::_crowd_solve(const Vector3 &p_motion) {
 
 // Projects `offset` out of the gathered neighbours, a few passes over them in turn.
 // Returns whether a pass found nothing left to correct.
-bool StairsBody::_crowd_project(Vector3 &r_offset) const {
-	for (int pass = 0; pass < CROWD_PASSES && !_neighbours.is_empty(); pass++) {
+bool StairsBody::_crowd_project(Vector3 &r_offset) {
+	for (int pass = 0; pass < CROWD_PASSES && !_near.is_empty(); pass++) {
 		bool moved = false;
-		for (const Neighbour &n : _neighbours) {
-			if (_feet_apart(_me, r_offset, n, Vector3(), n.least_gap)) {
+		for (Near &n : _near) {
+			const Foot &other = s_foot[n.index];
+			// The test below corrects only a gap under least_gap - CROWD_SETTLED; a
+			// neighbour surely further than that needs no test.
+			if (_feet_apart(_me, r_offset, other, Vector3(), n.least_gap) || _gap_surely_over(n, r_offset, n.least_gap - CROWD_SETTLED)) {
 				continue;
 			}
 			Vector3 normal;
-			const double gap = _foot_gap(_me, r_offset, n, Vector3(), normal);
+			const double gap = _foot_gap(_me, r_offset, other, Vector3(), normal);
+			n.known_gap = gap;
+			n.known_at = r_offset;
 			if (gap < n.least_gap - CROWD_SETTLED) {
 				r_offset += normal * (n.least_gap - gap);
 				moved = true;
@@ -840,7 +863,7 @@ bool StairsBody::_crowd_project(Vector3 &r_offset) const {
 			return true;
 		}
 	}
-	return _neighbours.is_empty();
+	return _near.is_empty();
 }
 
 // No motion of its own this frame: nothing horizontal, not rising, no intent and no

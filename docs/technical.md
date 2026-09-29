@@ -94,7 +94,7 @@ steps and floor skip that. A neighbour the move meets is not tried as a step
 either, unless something stands behind it at floor height. `test/bench_pile.gd`, 96
 box-shaped bodies pressed into a pile and colliding with each other, runs at about
 32 µs per body under Jolt and 48 under Godot Physics. [Crowd
-separation](#crowd-separation) takes that to 8.9 and 12.3.
+separation](#crowd-separation) takes that to 8.9 and 12.2.
 
 ## Resting bodies
 
@@ -281,6 +281,14 @@ against as touched. Without the cut, a long move, such as one stretched by
 `time_scale`, ended inside them: at a time scale of 4 a pile of 96 overlapped by
 35 mm on average, against 6.5 mm now at any time scale.
 
+Most neighbours are nowhere near touching, and the exact capsule gap is the
+costly test, so each neighbour keeps the last gap measured to it and the offset
+it was measured at. Moving the body by some distance changes the gap by at most
+that distance, so a known gap less the distance moved since bounds the gap now;
+when that bound clears what the test asks by 0.1 mm, the exact test is skipped.
+In the moving pile on the walk grid this cut the cost of a body by about a
+tenth, with every position the same to the last bit.
+
 Neighbours are read from the snapshot, which each member brings up to date after
 its move, so no move asks the engine where its neighbours are. A member moved or
 turned by other code during the frame, after its own move, is seen as its move
@@ -291,7 +299,7 @@ horizontal normal pointing back at this body, and velocity is clipped against
 them.
 
 **Cost.** `test/bench_pile.gd -- --crowd`, 96 box-shaped bodies pressed into a
-pile, costs 12.3 µs per body on Godot Physics and 8.9 on Jolt, against 47 and 32
+pile, costs 12.2 µs per body on Godot Physics and 8.9 on Jolt, against 47 and 32
 with collision. Of that, the separation itself is under 3 µs; the rest is the
 sweeps against the floor. The same bodies standing apart and still cost what they
 cost without it.
@@ -378,9 +386,9 @@ frame:
 | pressed into a tall wall | 1.3 | 41 | 19 |
 | climbing a flight | 1.0 | 18.4 | 12.1 |
 
-In the pile of 96 (`bench_pile.gd -- --crowd --grid`) a body costs 4.4 µs, against
-12.3 and 8.9 by sweeps; the grid's own work is about 0.3 µs of that, and crowd
-separation most of the rest.
+In the pile of 96 (`bench_pile.gd -- --crowd --grid`) a body costs 4.0 µs on Godot
+Physics and 4.1 on Jolt, against 12.2 and 8.9 by sweeps; the grid's own work is
+about 0.3 µs of that, and crowd separation most of the rest.
 
 ## Physics engines
 
@@ -425,5 +433,6 @@ The benchmarks:
 - `bench_frame.gd` measures the per-frame cost of one character in several
   situations (`-- --grid` on a walk grid);
 - `bench_pile.gd` measures a crowd pressed together (`-- --crowd`, `-- --grid`,
-  `-- --idle`, and `-- --every N` for bodies moved every Nth frame);
+  `-- --idle`, `-- --every N` for bodies moved every Nth frame, and `-- --settle`
+  for a pile that has stopped);
 - `bench_primitive.gd` measures what each physics query costs by itself.

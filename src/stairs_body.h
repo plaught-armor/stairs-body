@@ -106,6 +106,9 @@ private:
 	// of the neighbours: without it, rounding left by the last correction reads as
 	// unsettled and every move would be cut.
 	static constexpr double CROWD_SETTLED = 1e-6;
+	// How far past a bound a known gap has to be before the segment test is left
+	// out, so the float rounding of the test never decides differently.
+	static constexpr double CROWD_BOUND_MARGIN = 1e-4;
 	// Overlap between crowd footprints that separation leaves alone, in metres; deeper
 	// overlap is still pushed all the way back to touching. Box2D's b2_linearSlop, 5 mm,
 	// for the same reason: resolved to touching every frame, a still pile was nudged
@@ -173,25 +176,33 @@ private:
 	double _foot_bottom = 0.0;
 	double _foot_top = 0.0;
 	RID _space;
-	// This move's crowd neighbours, frozen where they stood when it began.
-	struct Neighbour {
-		uint64_t id = 0;
+	// A footprint in world space: a capsule lying flat, and the heights it spans.
+	struct Foot {
 		Vector3 centre;
 		Vector3 axis;
 		double radius = 0.0;
 		// Furthest the footprint reaches from its centre: half its length plus its
 		// radius.
 		double extent = 0.0;
-		double floor_y = 0.0;
 		double bottom = 0.0;
 		double top = 0.0;
+	};
+	// One of this move's crowd neighbours: its place in the snapshot, whose footprint
+	// does not change during the move, and what the move has learned about it.
+	struct Near {
+		uint32_t index = 0;
 		// The gap this move may not go below: where the neighbour was met if that is
 		// within the slop, else touching. See _crowd_solve.
 		double least_gap = 0.0;
+		// The last exact gap measured to this neighbour this move, and this body's
+		// offset when it was measured. Moving the body by d changes the gap by at most
+		// |d|, so these bound the gap at any other offset without the segment test.
+		double known_gap = -INFINITY;
+		Vector3 known_at;
 	};
-	LocalVector<Neighbour> _neighbours;
+	LocalVector<Near> _near;
 	// This body's own footprint in world space, as of the start of the move.
-	Neighbour _me;
+	Foot _me;
 	// The crowd pass's push for this body, taken by its next move.
 	Vector3 _crowd_pending;
 	// The time scale of this body's last move, so the crowd pass reaches as far as
@@ -200,10 +211,11 @@ private:
 	// This body's place in the crowd snapshot, or UINT32_MAX when not in it.
 	uint32_t _snap_index = UINT32_MAX;
 	// One member as the crowd pass read it at the start of the physics frame, and
-	// where its neighbours start in s_adjacent.
+	// where its neighbours start in s_adjacent. Its footprint is kept apart, in
+	// s_foot at the same index, since that is what the pair tests read.
 	struct CrowdSnap {
 		StairsBody *body = nullptr;
-		Neighbour foot;
+		uint64_t id = 0;
 		uint32_t layer = 0;
 		uint32_t crowd = 0;
 		RID space;
@@ -212,6 +224,7 @@ private:
 		uint32_t count = 0;
 	};
 	static std::vector<CrowdSnap> s_snap;
+	static std::vector<Foot> s_foot;
 	static std::vector<std::pair<uint32_t, uint32_t>> s_pairs;
 	static std::vector<uint32_t> s_adjacent;
 
@@ -253,20 +266,26 @@ private:
 
 	void _clear_contacts();
 	bool _walk_on_grid(double p_delta);
-	bool _grid_sweep(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_motion, Vector3 &r_shift, bool &r_hit);
+	bool _grid_sweep(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_motion, Vector3 &r_shift, bool &r_hit);
 	Vector3 _grid_intent_probe(const Vector3 &p_motion, double p_delta) const;
-	bool _grid_intent_step(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_probe, double p_floor, Vector3 &r_shift, bool &r_hit);
-	bool _grid_floor(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double &r_floor, uint32_t &r_box) const;
-	double _grid_nearest(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double p_above, double p_below, Vector3 &r_normal, uint32_t &r_box, Vector3 &r_point) const;
-	void _grid_commit(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double p_floor, uint32_t p_floor_box, bool p_hit, double p_held_reach);
+	bool _grid_intent_step(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_probe, double p_floor, Vector3 &r_shift, bool &r_hit);
+	bool _grid_floor(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_shift, double &r_floor, uint32_t &r_box) const;
+	double _grid_nearest(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_shift, double p_above, double p_below, Vector3 &r_normal, uint32_t &r_box, Vector3 &r_point) const;
+	void _grid_commit(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_shift, double p_floor, uint32_t p_floor_box, bool p_hit, double p_held_reach);
 	void _measure_footprint();
 	static void _crowd_frame();
-	static double _foot_gap(const Neighbour &p_a, const Vector3 &p_a_shift, const Neighbour &p_b, const Vector3 &p_b_shift, Vector3 &r_normal);
-	Neighbour _foot_world(const Transform3D &p_xform) const;
+	static double _foot_gap(const Foot &p_a, const Vector3 &p_a_shift, const Foot &p_b, const Vector3 &p_b_shift, Vector3 &r_normal);
+	Foot _foot_world(const Transform3D &p_xform) const;
 	bool _crowd_gather();
 	void _crowd_publish();
-	bool _crowd_project(Vector3 &r_offset) const;
-	static bool _feet_apart(const Neighbour &p_a, const Vector3 &p_a_shift, const Neighbour &p_b, const Vector3 &p_b_shift, double p_gap);
+	bool _crowd_project(Vector3 &r_offset);
+	static bool _feet_apart(const Foot &p_a, const Vector3 &p_a_shift, const Foot &p_b, const Vector3 &p_b_shift, double p_gap);
+	static bool _gap_surely_over(const Near &p_n, const Vector3 &p_offset, double p_gap);
+	// Whether footprints `a` and `b` are stacked rather than side by side: they share
+	// no more than half the shorter one's height. Stacked footprints never touch.
+	static bool _feet_stacked(const Foot &p_a, const Foot &p_b) {
+		return MIN(p_a.top, p_b.top) - MAX(p_a.bottom, p_b.bottom) <= 0.5 * MIN(p_a.top - p_a.bottom, p_b.top - p_b.bottom);
+	}
 	void _move(double p_time_scale);
 	Vector3 _crowd_solve(const Vector3 &p_motion);
 	bool _still() const;
