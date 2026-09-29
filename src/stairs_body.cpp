@@ -22,7 +22,6 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include <cmath>
-#include <unordered_map>
 #include <vector>
 
 using namespace godot;
@@ -37,13 +36,25 @@ PhysicsServer3D *physics() {
 std::vector<StairsBody *> g_members;
 // The physics frame the crowd snapshot was taken on.
 uint64_t g_crowd_frame = UINT64_MAX;
-// Grid over the snapshot's footprint centres, by cell, holding snapshot indices.
-// Cells are as wide as the longest reach doubled plus the lookahead, so any two
-// footprints that could touch this frame are at most one cell apart.
-std::unordered_map<int64_t, std::vector<uint32_t>> g_grid;
+// Grid over the snapshot's footprint centres. Cells are as wide as the longest
+// reach doubled plus the lookahead, so any two footprints that could touch this
+// frame are at most one cell apart. Kept as a spatial hash sorted by counting, the
+// dense layout of Mueller's "Ten Minute Physics" hashing: each member's cell, and
+// the members by bucket, packed - bucket b's are g_bucket_members[g_bucket_first[b]]
+// up to g_bucket_members[g_bucket_first[b + 1]], in snapshot order. A bucket may
+// hold several cells; a lookup keeps its own cell's members. Nothing is
+// allocated once the vectors have grown to the crowd.
+std::vector<int64_t> g_cell_x;
+std::vector<int64_t> g_cell_z;
+std::vector<uint32_t> g_bucket_first;
+std::vector<uint32_t> g_bucket_members;
+std::vector<uint32_t> g_bucket_fill;
 
-int64_t cell_key(int64_t p_x, int64_t p_z) {
-	return (p_x << 32) ^ (p_z & 0xffffffff);
+// The bucket of cell (x, z), among `mask + 1`, a power of two. The primes are
+// Teschner's, from "Optimized Spatial Hashing for Collision Detection of
+// Deformable Objects".
+uint32_t cell_bucket(int64_t p_x, int64_t p_z, uint32_t p_mask) {
+	return (uint32_t)(((uint64_t)p_x * 73856093u) ^ ((uint64_t)p_z * 19349663u)) & p_mask;
 }
 
 } // namespace
@@ -113,7 +124,7 @@ StairsWalkGrid *StairsBody::get_walk_grid() const {
 // the sweeps' step probe lets it. A move the grid cannot finish - a drop past the step-down reach,
 // a ceiling met stepping up, the body already inside a box - is undone and swept.
 // Returns whether the move was made.
-bool StairsBody::_walk_on_grid(double p_delta) {
+bool StairsBody::_walk_on_grid(const Transform3D &p_xform, double p_delta) {
 	StairsWalkGrid *grid = get_walk_grid();
 	_on_grid = false;
 	if (grid == nullptr || !_on_floor || velocity.y > 0.0 || force_stair_step ||
@@ -130,15 +141,15 @@ bool StairsBody::_walk_on_grid(double p_delta) {
 		_measure_footprint();
 		ERR_FAIL_COND_V_MSG(!_footprint_known, false, "StairsBody has no shapes to walk the grid with.");
 	}
-	const Foot foot = _foot_world(get_global_transform());
+	const Foot foot = _foot_world(p_xform);
 	const Vector3 saved_velocity = velocity;
-	const Vector3 saved_pending = _crowd_pending;
+	const Flat saved_pending = _crowd_pending;
 	_contacts.clear();
-	const Vector3 motion = _crowd_solve(velocity * HORIZONTAL_MASK * p_delta) * HORIZONTAL_MASK;
-	const Vector3 probe = _grid_intent_probe(motion, p_delta);
+	const Flat motion(_crowd_solve(velocity * HORIZONTAL_MASK * p_delta));
+	const Flat probe = _grid_intent_probe(motion, p_delta);
 	const double pad = foot.axis.length() + foot.radius + safe_margin * 4.0;
-	const Vector3 from = foot.centre;
-	const Vector3 to = foot.centre + motion + probe;
+	const Flat from = foot.centre;
+	const Flat to = foot.centre + motion + probe;
 	const double min_x = MIN(from.x, to.x) - pad;
 	const double min_z = MIN(from.z, to.z) - pad;
 	const double max_x = MAX(from.x, to.x) + pad;
@@ -148,14 +159,14 @@ bool StairsBody::_walk_on_grid(double p_delta) {
 
 	double floor = 0.0;
 	uint32_t floor_box = 0;
-	Vector3 shift;
+	Flat shift;
 	bool hit = false;
 	const bool walked = !grid->unanswered(min_x, min_z, max_x, max_z, foot.bottom - _step_down_reach() - WALK_ENTRY, foot.top + step_height, get_collision_mask()) &&
-			_grid_floor(*grid, foot, Vector3(), floor, floor_box) && std::abs(foot.bottom - floor) <= WALK_ENTRY &&
-			(probe == Vector3() ? _grid_sweep(*grid, foot, motion, shift, hit) : _grid_intent_step(*grid, foot, probe, floor, shift, hit)) &&
+			_grid_floor(*grid, foot, Flat(), floor, floor_box) && std::abs(foot.bottom - floor) <= WALK_ENTRY &&
+			(probe == Flat() ? _grid_sweep(*grid, foot, motion, shift, hit) : _grid_intent_step(*grid, foot, probe, floor, shift, hit)) &&
 			_grid_floor(*grid, foot, shift, floor, floor_box) && foot.bottom - floor <= _step_down_reach() + GRID_SLACK;
-	Vector3 normal;
-	Vector3 point;
+	Flat normal;
+	Flat point;
 	uint32_t box = 0;
 	if (!walked || _grid_nearest(*grid, foot, shift, floor + GRID_SLACK, floor + (foot.top - foot.bottom), normal, box, point) < 0.0) {
 		velocity = saved_velocity;
@@ -165,8 +176,8 @@ bool StairsBody::_walk_on_grid(double p_delta) {
 	}
 	// Held by intent against a wall it cannot step: on the wall wherever the probe
 	// met it, as _intent_step holds the sweeps.
-	const bool held = probe != Vector3() && shift == Vector3() && hit;
-	_grid_commit(*grid, foot, shift, floor, floor_box, hit, held ? probe.length() : 0.0);
+	const bool held = probe != Flat() && shift == Flat() && hit;
+	_grid_commit(p_xform, *grid, foot, shift, floor, floor_box, hit, held ? probe.length() : 0.0);
 	return true;
 }
 
@@ -176,10 +187,10 @@ bool StairsBody::_walk_on_grid(double p_delta) {
 // intent: motion climbs a step on the grid by itself once it carries the
 // footprint onto it, where the sweeps' probe reaches the face up to
 // min_step_forward sooner.
-Vector3 StairsBody::_grid_intent_probe(const Vector3 &p_motion, double p_delta) const {
-	const Vector3 intent = desired_velocity * HORIZONTAL_MASK * p_delta;
-	if (p_motion != Vector3() || intent == Vector3()) {
-		return Vector3();
+Flat StairsBody::_grid_intent_probe(const Flat &p_motion, double p_delta) const {
+	const Flat intent = Flat(desired_velocity) * p_delta;
+	if (p_motion != Flat() || intent == Flat()) {
+		return Flat();
 	}
 	return intent.normalized() * MAX((double)intent.length(), min_step_forward);
 }
@@ -189,14 +200,14 @@ Vector3 StairsBody::_grid_intent_probe(const Vector3 &p_motion, double p_delta) 
 // stands on. Otherwise the body stays where it is, and `r_hit` still says whether
 // the probe met a wall, as a body held against a face is on it with the sweeps.
 // Returns false when the body starts inside a box.
-bool StairsBody::_grid_intent_step(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_probe, double p_floor, Vector3 &r_shift, bool &r_hit) {
+bool StairsBody::_grid_intent_step(const StairsWalkGrid &p_grid, const Foot &p_foot, const Flat &p_probe, double p_floor, Flat &r_shift, bool &r_hit) {
 	if (!_grid_sweep(p_grid, p_foot, p_probe, r_shift, r_hit)) {
 		return false;
 	}
 	double floor = 0.0;
 	uint32_t box = 0;
 	if (!_grid_floor(p_grid, p_foot, r_shift, floor, box) || floor <= p_floor + GRID_SLACK) {
-		r_shift = Vector3();
+		r_shift = Flat();
 	}
 	return true;
 }
@@ -208,19 +219,19 @@ bool StairsBody::_grid_intent_step(const StairsWalkGrid &p_grid, const Foot &p_f
 // passed over, then bisects to the last clear point. A body already nearer a box
 // than safe_margin may move but not come nearer. Returns false when the body
 // starts inside such a box.
-bool StairsBody::_grid_sweep(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_motion, Vector3 &r_shift, bool &r_hit) {
+bool StairsBody::_grid_sweep(const StairsWalkGrid &p_grid, const Foot &p_foot, const Flat &p_motion, Flat &r_shift, bool &r_hit) {
 	const double above = p_foot.bottom + step_height + GRID_SLACK;
 	const double below = p_foot.top;
-	Vector3 normal;
-	Vector3 point;
+	Flat normal;
+	Flat point;
 	uint32_t box = UINT32_MAX;
-	r_shift = Vector3();
+	r_shift = Flat();
 	r_hit = false;
 	double near = _grid_nearest(p_grid, p_foot, r_shift, above, below, normal, box, point);
 	if (near < 0.0) {
 		return false;
 	}
-	Vector3 remaining = p_motion;
+	Flat remaining = p_motion;
 	for (int slide = 0; slide < max_slides && remaining.length_squared() > 1e-12; slide++) {
 		const double least = MIN(safe_margin, near) - 1e-9;
 		const int samples = CLAMP((int)std::ceil(remaining.length() / MAX(p_foot.radius * 0.5, 0.01)), 1, GRID_SAMPLES_MAX);
@@ -244,11 +255,11 @@ bool StairsBody::_grid_sweep(const StairsWalkGrid &p_grid, const Foot &p_foot, c
 		}
 		r_shift += remaining * clear;
 		near = _grid_nearest(p_grid, p_foot, r_shift, above, below, normal, box, point);
-		if (normal == Vector3()) {
+		if (normal == Flat()) {
 			return true;
 		}
 		r_hit = true;
-		const Vector3 rest = remaining * (1.0 - clear);
+		const Flat rest = remaining * (1.0 - clear);
 		if (-rest.normalized().dot(normal) > HEAD_ON) {
 			return true;
 		}
@@ -260,16 +271,16 @@ bool StairsBody::_grid_sweep(const StairsWalkGrid &p_grid, const Foot &p_foot, c
 // The highest top among the grid's boxes under the footprint moved by `shift`
 // that the body can stand on from where it is: no higher than a step above its
 // feet. Returns false when there is none.
-bool StairsBody::_grid_floor(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_shift, double &r_floor, uint32_t &r_box) const {
-	const Vector3 a = p_foot.centre + p_shift - p_foot.axis;
-	const Vector3 b = p_foot.centre + p_shift + p_foot.axis;
+bool StairsBody::_grid_floor(const StairsWalkGrid &p_grid, const Foot &p_foot, const Flat &p_shift, double &r_floor, uint32_t &r_box) const {
+	const Flat a = p_foot.centre + p_shift - p_foot.axis;
+	const Flat b = p_foot.centre + p_shift + p_foot.axis;
 	const double reach_up = p_foot.bottom + step_height + GRID_SLACK;
 	const uint32_t mask = get_collision_mask();
 	bool found = false;
 	for (const uint32_t i : _grid_boxes) {
 		const StairsWalkGrid::Box &box = p_grid.box(i);
-		Vector3 normal;
-		Vector3 point;
+		Flat normal;
+		Flat point;
 		if ((box.layer & mask) == 0 || box.top > reach_up || (found && box.top <= r_floor) ||
 				StairsWalkGrid::gap(box, a, b, p_foot.radius, normal, point) > 0.0) {
 			continue;
@@ -285,19 +296,19 @@ bool StairsBody::_grid_floor(const StairsWalkGrid &p_grid, const Foot &p_foot, c
 // grid's boxes on the body's mask that reach above `above` and below `below`,
 // with the normal from and nearest point of the nearest one, or +inf when there
 // are none.
-double StairsBody::_grid_nearest(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_shift, double p_above, double p_below, Vector3 &r_normal, uint32_t &r_box, Vector3 &r_point) const {
-	const Vector3 a = p_foot.centre + p_shift - p_foot.axis;
-	const Vector3 b = p_foot.centre + p_shift + p_foot.axis;
+double StairsBody::_grid_nearest(const StairsWalkGrid &p_grid, const Foot &p_foot, const Flat &p_shift, double p_above, double p_below, Flat &r_normal, uint32_t &r_box, Flat &r_point) const {
+	const Flat a = p_foot.centre + p_shift - p_foot.axis;
+	const Flat b = p_foot.centre + p_shift + p_foot.axis;
 	const uint32_t mask = get_collision_mask();
 	double nearest = INFINITY;
-	r_normal = Vector3();
+	r_normal = Flat();
 	for (const uint32_t i : _grid_boxes) {
 		const StairsWalkGrid::Box &box = p_grid.box(i);
 		if ((box.layer & mask) == 0 || box.top <= p_above || box.bottom >= p_below) {
 			continue;
 		}
-		Vector3 normal;
-		Vector3 point;
+		Flat normal;
+		Flat point;
 		const double gap = StairsWalkGrid::gap(box, a, b, p_foot.radius, normal, point);
 		if (gap < nearest) {
 			nearest = gap;
@@ -315,33 +326,34 @@ double StairsBody::_grid_nearest(const StairsWalkGrid &p_grid, const Foot &p_foo
 // does not touch it, as with the sweeps, which leave it a margin or more away,
 // unless intent holds it there: then a wall within `held_reach` is touched. A
 // step up or down past STEP_DOWN_SIGNAL_MIN is announced.
-void StairsBody::_grid_commit(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_shift, double p_floor, uint32_t p_floor_box, bool p_hit, double p_held_reach) {
-	Transform3D xform = get_global_transform();
-	xform.origin += p_shift;
+void StairsBody::_grid_commit(const Transform3D &p_xform, const StairsWalkGrid &p_grid, const Foot &p_foot, const Flat &p_shift, double p_floor, uint32_t p_floor_box, bool p_hit, double p_held_reach) {
+	Transform3D xform = p_xform;
+	xform.origin += p_shift.xyz();
 	xform.origin.y += p_floor - p_foot.bottom;
 	set_global_transform(xform);
 	_clear_contacts();
-	const StairsWalkGrid::Box &floor_box = p_grid.box(p_floor_box);
+	const StairsWalkGrid::BoxSource &floor_source = p_grid.source(p_floor_box);
 	_on_floor = true;
 	_floor_normal = WORLD_UP;
-	_floor_rid = floor_box.rid;
-	_floor_id = floor_box.id;
+	_floor_rid = floor_source.rid;
+	_floor_id = floor_source.id;
 	_platform_velocity = Vector3();
-	const Vector3 centre = p_foot.centre + p_shift;
+	const Flat centre = p_foot.centre + p_shift;
 	Contact floor_contact;
-	floor_contact.collider_id = floor_box.id;
+	floor_contact.collider_id = floor_source.id;
 	floor_contact.normal = WORLD_UP;
 	floor_contact.position = Vector3(centre.x, p_floor, centre.z);
 	_contacts.push_back(floor_contact);
-	Vector3 wall;
-	Vector3 point;
+	Flat flat_wall;
+	Flat point;
 	uint32_t wall_box = UINT32_MAX;
-	const double gap = _grid_nearest(p_grid, p_foot, p_shift, p_foot.bottom + step_height + GRID_SLACK, p_foot.top, wall, wall_box, point);
-	if (p_hit && gap <= MAX(safe_margin * 2.0, p_held_reach) && wall != Vector3()) {
+	const double gap = _grid_nearest(p_grid, p_foot, p_shift, p_foot.bottom + step_height + GRID_SLACK, p_foot.top, flat_wall, wall_box, point);
+	if (p_hit && gap <= MAX(safe_margin * 2.0, p_held_reach) && flat_wall != Flat()) {
+		const Vector3 wall = flat_wall.xyz();
 		_on_wall = true;
 		_wall_normal = wall;
 		Contact wall_contact;
-		wall_contact.collider_id = p_grid.box(wall_box).id;
+		wall_contact.collider_id = p_grid.source(wall_box).id;
 		wall_contact.normal = wall;
 		wall_contact.position = Vector3(point.x, p_floor, point.z);
 		_contacts.push_back(wall_contact);
@@ -390,12 +402,15 @@ void StairsBody::_crowd_publish() {
 void StairsBody::_move(double p_time_scale) {
 	_time_scale = p_time_scale;
 	const double delta = get_physics_process_delta_time() * p_time_scale;
-	const bool overlapping = _crowd_gather();
-	if (!overlapping && _resting()) {
+	// Where the body stands until the move puts it somewhere, read from the engine
+	// once for everything up to the move itself.
+	const Transform3D at = get_global_transform();
+	const bool overlapping = _crowd_gather(at);
+	if (!overlapping && _resting(at)) {
 		velocity.y = 0.0;
 		return;
 	}
-	if (_walk_on_grid(delta)) {
+	if (_walk_on_grid(at, delta)) {
 		return;
 	}
 	const bool still = _still() && !overlapping;
@@ -407,7 +422,8 @@ void StairsBody::_move(double p_time_scale) {
 		_carry(_platform_velocity * delta);
 	}
 
-	const Transform3D start = get_global_transform();
+	// Only a carry has moved the body since `at` was read.
+	const Transform3D start = was_on_floor && _platform_velocity != Vector3() ? get_global_transform() : at;
 	const Vector3 motion = _crowd_solve(_intended_motion(was_on_floor, delta));
 	const Vector3 start_velocity = velocity;
 	// A redo keeps what came before the slide: the carry's contact and the crowd
@@ -467,22 +483,33 @@ void StairsBody::_move(double p_time_scale) {
 
 void StairsBody::_notification(int p_what) {
 	if (p_what == NOTIFICATION_ENTER_TREE) {
+		_member_index = g_members.size();
 		g_members.push_back(this);
 		_space = get_world_3d()->get_space();
 	} else if (p_what == NOTIFICATION_EXIT_TREE) {
-		for (size_t i = 0; i < g_members.size(); i++) {
-			if (g_members[i] == this) {
-				g_members[i] = g_members.back();
-				g_members.pop_back();
-				break;
+		// A body entered before the extension was reloaded has no index; find it.
+		if (_member_index >= g_members.size() || g_members[_member_index] != this) {
+			_member_index = UINT32_MAX;
+			for (uint32_t i = 0; i < g_members.size(); i++) {
+				if (g_members[i] == this) {
+					_member_index = i;
+					break;
+				}
 			}
+		}
+		if (_member_index != UINT32_MAX) {
+			StairsBody *last = g_members.back();
+			g_members[_member_index] = last;
+			last->_member_index = _member_index;
+			g_members.pop_back();
+			_member_index = UINT32_MAX;
 		}
 		// Out of this frame's snapshot too, which others read until the next one.
 		if (_snap_index < s_snap.size() && s_snap[_snap_index].body == this) {
 			s_snap[_snap_index].body = nullptr;
 		}
 		_snap_index = UINT32_MAX;
-		_crowd_pending = Vector3();
+		_crowd_pending = Flat();
 	}
 }
 
@@ -573,8 +600,8 @@ void StairsBody::_measure_footprint() {
 // This body's footprint where `xform` puts it, in the form a neighbour is kept.
 StairsBody::Foot StairsBody::_foot_world(const Transform3D &p_xform) const {
 	Foot n;
-	n.axis = (p_xform.basis.xform(_foot_axis) * HORIZONTAL_MASK).normalized() * _foot_half_length;
-	n.centre = p_xform.xform(_foot_centre) * HORIZONTAL_MASK;
+	n.axis = Flat(p_xform.basis.xform(_foot_axis)).normalized() * _foot_half_length;
+	n.centre = Flat(p_xform.xform(_foot_centre));
 	n.radius = _foot_radius;
 	n.extent = _foot_half_length + _foot_radius;
 	n.bottom = p_xform.origin.y + _foot_bottom;
@@ -585,21 +612,21 @@ StairsBody::Foot StairsBody::_foot_world(const Transform3D &p_xform) const {
 // Gap between footprints `a` and `b` shifted by `a_shift` and `b_shift`, negative
 // when they overlap, or +inf when they are stacked rather than side by side.
 // `r_normal` points from b to a.
-double StairsBody::_foot_gap(const Foot &p_a, const Vector3 &p_a_shift, const Foot &p_b, const Vector3 &p_b_shift, Vector3 &r_normal) {
+double StairsBody::_foot_gap(const Foot &p_a, const Flat &p_a_shift, const Foot &p_b, const Flat &p_b_shift, Flat &r_normal) {
 	if (_feet_stacked(p_a, p_b)) {
 		return INFINITY;
 	}
-	const Vector3 a = p_a.centre + p_a_shift;
-	const Vector3 b = p_b.centre + p_b_shift;
-	Vector3 on_a;
-	Vector3 on_b;
+	const Flat a = p_a.centre + p_a_shift;
+	const Flat b = p_b.centre + p_b_shift;
+	Flat on_a;
+	Flat on_b;
 	closest_on_segments(a - p_a.axis, a + p_a.axis, b - p_b.axis, b + p_b.axis, on_a, on_b);
-	const Vector3 apart = on_a - on_b;
+	const Flat apart = on_a - on_b;
 	const double distance = apart.length();
 	if (distance > 1e-9) {
 		r_normal = apart / distance;
 	} else {
-		r_normal = (a - b).length() > 1e-9 ? (a - b).normalized() : Vector3(1, 0, 0);
+		r_normal = (a - b).length() > 1e-9 ? (a - b).normalized() : Flat(1, 0);
 	}
 	return distance - p_a.radius - p_b.radius;
 }
@@ -608,7 +635,7 @@ double StairsBody::_foot_gap(const Foot &p_a, const Vector3 &p_a_shift, const Fo
 // centres are further apart than both extents and `gap` together. Answers without
 // the segment test, as DetourCrowd rejects on squared distance before its square
 // root.
-bool StairsBody::_feet_apart(const Foot &p_a, const Vector3 &p_a_shift, const Foot &p_b, const Vector3 &p_b_shift, double p_gap) {
+bool StairsBody::_feet_apart(const Foot &p_a, const Flat &p_a_shift, const Foot &p_b, const Flat &p_b_shift, double p_gap) {
 	const double reach = p_a.extent + p_b.extent + p_gap;
 	return reach >= 0.0 && (p_a.centre + p_a_shift - p_b.centre - p_b_shift).length_squared() > reach * reach;
 }
@@ -654,13 +681,30 @@ void StairsBody::_crowd_frame() {
 		reach = MAX(reach, snap.reach);
 	}
 	const double cell = MAX(reach * 2.0 + CROWD_LOOKAHEAD, 0.01);
-	g_grid.clear();
+	uint32_t buckets = 1;
+	while (buckets < count * 2) {
+		buckets *= 2;
+	}
+	const uint32_t mask = buckets - 1;
+	g_cell_x.resize(count);
+	g_cell_z.resize(count);
+	g_bucket_first.assign(buckets + 1, 0);
 	for (uint32_t i = 0; i < count; i++) {
-		if (s_snap[i].crowd == 0) {
-			continue;
+		g_cell_x[i] = (int64_t)std::floor(s_foot[i].centre.x / cell);
+		g_cell_z[i] = (int64_t)std::floor(s_foot[i].centre.z / cell);
+		if (s_snap[i].crowd != 0) {
+			g_bucket_first[cell_bucket(g_cell_x[i], g_cell_z[i], mask) + 1]++;
 		}
-		const Vector3 &at = s_foot[i].centre;
-		g_grid[cell_key((int64_t)std::floor(at.x / cell), (int64_t)std::floor(at.z / cell))].push_back(i);
+	}
+	for (uint32_t b = 1; b <= buckets; b++) {
+		g_bucket_first[b] += g_bucket_first[b - 1];
+	}
+	g_bucket_members.resize(g_bucket_first[buckets]);
+	g_bucket_fill.assign(g_bucket_first.begin(), g_bucket_first.end() - 1);
+	for (uint32_t i = 0; i < count; i++) {
+		if (s_snap[i].crowd != 0) {
+			g_bucket_members[g_bucket_fill[cell_bucket(g_cell_x[i], g_cell_z[i], mask)]++] = i;
+		}
 	}
 
 	// Neighbour lists, both ways round, packed one member after another.
@@ -672,17 +716,15 @@ void StairsBody::_crowd_frame() {
 		if (a.crowd == 0) {
 			continue;
 		}
-		const int64_t cx = (int64_t)std::floor(s_foot[i].centre.x / cell);
-		const int64_t cz = (int64_t)std::floor(s_foot[i].centre.z / cell);
 		for (int64_t dx = -1; dx <= 1; dx++) {
 			for (int64_t dz = -1; dz <= 1; dz++) {
-				const auto found = g_grid.find(cell_key(cx + dx, cz + dz));
-				if (found == g_grid.end()) {
-					continue;
-				}
-				for (const uint32_t j : found->second) {
+				const int64_t x = g_cell_x[i] + dx;
+				const int64_t z = g_cell_z[i] + dz;
+				const uint32_t bucket = cell_bucket(x, z, mask);
+				for (uint32_t k = g_bucket_first[bucket]; k < g_bucket_first[bucket + 1]; k++) {
+					const uint32_t j = g_bucket_members[k];
 					const CrowdSnap &b = s_snap[j];
-					if (j == i || a.space != b.space || (a.crowd & b.layer) == 0 || (b.crowd & a.layer) == 0) {
+					if (g_cell_x[j] != x || g_cell_z[j] != z || j == i || a.space != b.space || (a.crowd & b.layer) == 0 || (b.crowd & a.layer) == 0) {
 						continue;
 					}
 					const double near = a.reach + b.reach + CROWD_LOOKAHEAD;
@@ -699,17 +741,17 @@ void StairsBody::_crowd_frame() {
 		s_snap[i].count = s_adjacent.size() - s_snap[i].first;
 	}
 
-	static std::vector<Vector3> shift;
-	static std::vector<Vector3> delta;
-	shift.assign(count, Vector3());
+	static std::vector<Flat> shift;
+	static std::vector<Flat> delta;
+	shift.assign(count, Flat());
 	for (int pass = 0; pass < CROWD_PASSES; pass++) {
-		delta.assign(count, Vector3());
+		delta.assign(count, Flat());
 		bool overlapped = false;
 		for (const std::pair<uint32_t, uint32_t> &pair : s_pairs) {
 			if (_feet_apart(s_foot[pair.first], shift[pair.first], s_foot[pair.second], shift[pair.second], -CROWD_SLOP)) {
 				continue;
 			}
-			Vector3 normal;
+			Flat normal;
 			const double gap = _foot_gap(s_foot[pair.first], shift[pair.first], s_foot[pair.second], shift[pair.second], normal);
 			if (gap >= -CROWD_SLOP) {
 				continue;
@@ -735,7 +777,7 @@ void StairsBody::_crowd_frame() {
 // by `offset`, from the last gap measured to it: the gap then, less how far the
 // body has moved since, clears `gap` by CROWD_BOUND_MARGIN. Answers without the
 // segment test, and never where the test would say otherwise.
-bool StairsBody::_gap_surely_over(const Near &p_n, const Vector3 &p_offset, double p_gap) {
+bool StairsBody::_gap_surely_over(const Near &p_n, const Flat &p_offset, double p_gap) {
 	const double room = p_n.known_gap - p_gap - CROWD_BOUND_MARGIN;
 	return room > 0.0 && (p_offset - p_n.known_at).length_squared() < room * room;
 }
@@ -745,7 +787,7 @@ bool StairsBody::_gap_surely_over(const Near &p_n, const Vector3 &p_offset, doub
 // this physics frame first. Neighbours are read from the snapshot, which each
 // member updates as it moves, so a member moved by other code during the frame is
 // seen where it stood when the frame began.
-bool StairsBody::_crowd_gather() {
+bool StairsBody::_crowd_gather(const Transform3D &p_xform) {
 	_near.clear();
 	if (crowd_layers == 0) {
 		return false;
@@ -759,7 +801,7 @@ bool StairsBody::_crowd_gather() {
 		// Entered the tree since the snapshot: kept apart from the next frame on.
 		return false;
 	}
-	_me = _foot_world(get_global_transform());
+	_me = _foot_world(p_xform);
 	const CrowdSnap &mine = s_snap[_snap_index];
 	bool overlapping = false;
 	for (uint32_t k = mine.first; k < mine.first + mine.count; k++) {
@@ -777,9 +819,9 @@ bool StairsBody::_crowd_gather() {
 		n.index = index;
 		// Apart by more than both extents, the gap is surely positive and the segment
 		// test would only confirm it.
-		if (!_feet_apart(_me, _crowd_pending, other, Vector3(), 0.0)) {
-			Vector3 normal;
-			const double gap = _foot_gap(_me, _crowd_pending, other, Vector3(), normal);
+		if (!_feet_apart(_me, _crowd_pending, other, Flat(), 0.0)) {
+			Flat normal;
+			const double gap = _foot_gap(_me, _crowd_pending, other, Flat(), normal);
 			n.least_gap = gap >= -CROWD_SLOP ? MIN(gap, 0.0) : 0.0;
 			n.known_gap = gap;
 			n.known_at = _crowd_pending;
@@ -787,7 +829,7 @@ bool StairsBody::_crowd_gather() {
 		}
 		_near.push_back(n);
 	}
-	return overlapping || _crowd_pending != Vector3();
+	return overlapping || _crowd_pending != Flat();
 }
 
 // The horizontal part of `motion`, plus the push the crowd pass left this body,
@@ -804,8 +846,8 @@ Vector3 StairsBody::_crowd_solve(const Vector3 &p_motion) {
 	// as a move with none always did. The neighbours within reach of the motion it
 	// gave up are the ones it is wedged against, and count as touched.
 	static constexpr double SHARES[] = { 1.0, 0.5, 0.25, 0.0 };
-	const Vector3 walk = p_motion * HORIZONTAL_MASK;
-	Vector3 offset;
+	const Flat walk(p_motion);
+	Flat offset;
 	double share = 0.0;
 	for (const double tried : SHARES) {
 		share = tried;
@@ -814,44 +856,45 @@ Vector3 StairsBody::_crowd_solve(const Vector3 &p_motion) {
 			break;
 		}
 	}
-	_crowd_pending = Vector3();
+	_crowd_pending = Flat();
 	const double touch = safe_margin + walk.length() * (1.0 - share);
 	for (const Near &n : _near) {
 		const Foot &other = s_foot[n.index];
-		if (_feet_apart(_me, offset, other, Vector3(), touch) || _gap_surely_over(n, offset, touch)) {
+		if (_feet_apart(_me, offset, other, Flat(), touch) || _gap_surely_over(n, offset, touch)) {
 			continue;
 		}
-		Vector3 normal;
-		const double gap = _foot_gap(_me, offset, other, Vector3(), normal);
+		Flat flat_normal;
+		const double gap = _foot_gap(_me, offset, other, Flat(), flat_normal);
 		if (gap > touch) {
 			continue;
 		}
+		const Vector3 normal = flat_normal.xyz();
 		Contact contact;
 		contact.collider_id = s_snap[n.index].id;
 		contact.normal = normal;
-		contact.position = _me.centre + offset - normal * (_foot_radius + MAX(gap, 0.0)) + Vector3(0, MAX(_me.bottom, other.bottom), 0);
+		contact.position = (_me.centre + offset - flat_normal * (_foot_radius + MAX(gap, 0.0))).xyz(MAX(_me.bottom, other.bottom));
 		_contacts.push_back(contact);
 		if (velocity.dot(normal) < 0.0) {
 			velocity = velocity.slide(normal);
 		}
 	}
-	return offset + Vector3(0, p_motion.y, 0);
+	return offset.xyz(p_motion.y);
 }
 
 // Projects `offset` out of the gathered neighbours, a few passes over them in turn.
 // Returns whether a pass found nothing left to correct.
-bool StairsBody::_crowd_project(Vector3 &r_offset) {
+bool StairsBody::_crowd_project(Flat &r_offset) {
 	for (int pass = 0; pass < CROWD_PASSES && !_near.is_empty(); pass++) {
 		bool moved = false;
 		for (Near &n : _near) {
 			const Foot &other = s_foot[n.index];
 			// The test below corrects only a gap under least_gap - CROWD_SETTLED; a
 			// neighbour surely further than that needs no test.
-			if (_feet_apart(_me, r_offset, other, Vector3(), n.least_gap) || _gap_surely_over(n, r_offset, n.least_gap - CROWD_SETTLED)) {
+			if (_feet_apart(_me, r_offset, other, Flat(), n.least_gap) || _gap_surely_over(n, r_offset, n.least_gap - CROWD_SETTLED)) {
 				continue;
 			}
-			Vector3 normal;
-			const double gap = _foot_gap(_me, r_offset, other, Vector3(), normal);
+			Flat normal;
+			const double gap = _foot_gap(_me, r_offset, other, Flat(), normal);
 			n.known_gap = gap;
 			n.known_at = r_offset;
 			if (gap < n.least_gap - CROWD_SETTLED) {
@@ -879,11 +922,11 @@ bool StairsBody::_still() const {
 // move would redo that move's checks and find what they found. The getters keep
 // the last move's answers, so a floor that stops colliding without moving is not
 // seen until the body moves or is moved.
-bool StairsBody::_resting() {
+bool StairsBody::_resting(const Transform3D &p_xform) {
 	if (!_rest_valid || !_still()) {
 		return false;
 	}
-	_rest_valid = get_global_transform() == _rest_transform && _shapes_unchanged() &&
+	_rest_valid = p_xform == _rest_transform && _shapes_unchanged() &&
 			UtilityFunctions::is_instance_id_valid(_floor_id) &&
 			Transform3D(physics()->body_get_state(_floor_rid, PhysicsServer3D::BODY_STATE_TRANSFORM)) == _rest_floor_transform &&
 			!_touched_by_mover();

@@ -178,8 +178,9 @@ private:
 	RID _space;
 	// A footprint in world space: a capsule lying flat, and the heights it spans.
 	struct Foot {
-		Vector3 centre;
-		Vector3 axis;
+		Flat centre;
+		// Half the capsule's axis, from its centre.
+		Flat axis;
 		double radius = 0.0;
 		// Furthest the footprint reaches from its centre: half its length plus its
 		// radius.
@@ -198,18 +199,21 @@ private:
 		// offset when it was measured. Moving the body by d changes the gap by at most
 		// |d|, so these bound the gap at any other offset without the segment test.
 		double known_gap = -INFINITY;
-		Vector3 known_at;
+		Flat known_at;
 	};
 	LocalVector<Near> _near;
 	// This body's own footprint in world space, as of the start of the move.
 	Foot _me;
 	// The crowd pass's push for this body, taken by its next move.
-	Vector3 _crowd_pending;
+	Flat _crowd_pending;
 	// The time scale of this body's last move, so the crowd pass reaches as far as
 	// the body walks when it moves less often than every frame.
 	double _time_scale = 1.0;
 	// This body's place in the crowd snapshot, or UINT32_MAX when not in it.
 	uint32_t _snap_index = UINT32_MAX;
+	// This body's place in the list of every StairsBody in the tree, or UINT32_MAX
+	// when out of the tree, so leaving it costs the same however many there are.
+	uint32_t _member_index = UINT32_MAX;
 	// One member as the crowd pass read it at the start of the physics frame, and
 	// where its neighbours start in s_adjacent. Its footprint is kept apart, in
 	// s_foot at the same index, since that is what the pair tests read.
@@ -265,22 +269,22 @@ private:
 	double _step_rise = 0.0;
 
 	void _clear_contacts();
-	bool _walk_on_grid(double p_delta);
-	bool _grid_sweep(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_motion, Vector3 &r_shift, bool &r_hit);
-	Vector3 _grid_intent_probe(const Vector3 &p_motion, double p_delta) const;
-	bool _grid_intent_step(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_probe, double p_floor, Vector3 &r_shift, bool &r_hit);
-	bool _grid_floor(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_shift, double &r_floor, uint32_t &r_box) const;
-	double _grid_nearest(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_shift, double p_above, double p_below, Vector3 &r_normal, uint32_t &r_box, Vector3 &r_point) const;
-	void _grid_commit(const StairsWalkGrid &p_grid, const Foot &p_foot, const Vector3 &p_shift, double p_floor, uint32_t p_floor_box, bool p_hit, double p_held_reach);
+	bool _walk_on_grid(const Transform3D &p_xform, double p_delta);
+	bool _grid_sweep(const StairsWalkGrid &p_grid, const Foot &p_foot, const Flat &p_motion, Flat &r_shift, bool &r_hit);
+	Flat _grid_intent_probe(const Flat &p_motion, double p_delta) const;
+	bool _grid_intent_step(const StairsWalkGrid &p_grid, const Foot &p_foot, const Flat &p_probe, double p_floor, Flat &r_shift, bool &r_hit);
+	bool _grid_floor(const StairsWalkGrid &p_grid, const Foot &p_foot, const Flat &p_shift, double &r_floor, uint32_t &r_box) const;
+	double _grid_nearest(const StairsWalkGrid &p_grid, const Foot &p_foot, const Flat &p_shift, double p_above, double p_below, Flat &r_normal, uint32_t &r_box, Flat &r_point) const;
+	void _grid_commit(const Transform3D &p_xform, const StairsWalkGrid &p_grid, const Foot &p_foot, const Flat &p_shift, double p_floor, uint32_t p_floor_box, bool p_hit, double p_held_reach);
 	void _measure_footprint();
 	static void _crowd_frame();
-	static double _foot_gap(const Foot &p_a, const Vector3 &p_a_shift, const Foot &p_b, const Vector3 &p_b_shift, Vector3 &r_normal);
+	static double _foot_gap(const Foot &p_a, const Flat &p_a_shift, const Foot &p_b, const Flat &p_b_shift, Flat &r_normal);
 	Foot _foot_world(const Transform3D &p_xform) const;
-	bool _crowd_gather();
+	bool _crowd_gather(const Transform3D &p_xform);
 	void _crowd_publish();
-	bool _crowd_project(Vector3 &r_offset);
-	static bool _feet_apart(const Foot &p_a, const Vector3 &p_a_shift, const Foot &p_b, const Vector3 &p_b_shift, double p_gap);
-	static bool _gap_surely_over(const Near &p_n, const Vector3 &p_offset, double p_gap);
+	bool _crowd_project(Flat &r_offset);
+	static bool _feet_apart(const Foot &p_a, const Flat &p_a_shift, const Foot &p_b, const Flat &p_b_shift, double p_gap);
+	static bool _gap_surely_over(const Near &p_n, const Flat &p_offset, double p_gap);
 	// Whether footprints `a` and `b` are stacked rather than side by side: they share
 	// no more than half the shorter one's height. Stacked footprints never touch.
 	static bool _feet_stacked(const Foot &p_a, const Foot &p_b) {
@@ -289,7 +293,7 @@ private:
 	void _move(double p_time_scale);
 	Vector3 _crowd_solve(const Vector3 &p_motion);
 	bool _still() const;
-	bool _resting();
+	bool _resting(const Transform3D &p_xform);
 	bool _touched_by_mover();
 	void _mark_rest(bool p_still);
 	bool _shapes_unchanged();

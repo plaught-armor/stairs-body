@@ -22,6 +22,8 @@
 #include <godot_cpp/variant/rid.hpp>
 #include <godot_cpp/variant/vector3.hpp>
 
+#include "stairs_geometry.h"
+
 #include <unordered_map>
 #include <vector>
 
@@ -32,7 +34,8 @@ class StairsWalkGrid : public Node3D {
 
 public:
 	// A baked box: its centre and half extents on the horizontal plane along its own
-	// axes u and v, and the heights of its bottom and top faces.
+	// axes u and v, the heights of its bottom and top faces, and its body's layers.
+	// Only what the walk's gap tests read; the body it came from is in BoxSource.
 	struct Box {
 		double cx = 0.0;
 		double cz = 0.0;
@@ -45,6 +48,10 @@ public:
 		double bottom = 0.0;
 		double top = 0.0;
 		uint32_t layer = 0;
+	};
+
+	// The body a baked box came from, read only where a walk ends on or against it.
+	struct BoxSource {
 		RID rid;
 		uint64_t id = 0;
 	};
@@ -81,6 +88,8 @@ private:
 
 	bool _stale = false;
 	std::vector<Box> _boxes;
+	// Parallel to _boxes.
+	std::vector<BoxSource> _box_sources;
 	std::vector<Unknown> _unknown;
 	std::unordered_map<uint64_t, Baked> _bodies;
 	uint32_t _box_live = 0;
@@ -115,6 +124,7 @@ public:
 	int get_unknown_count() const;
 
 	const Box &box(uint32_t p_index) const { return _boxes[p_index]; }
+	const BoxSource &source(uint32_t p_index) const { return _box_sources[p_index]; }
 	// Appends the boxes that may overlap the given horizontal bounds.
 	void gather(double p_min_x, double p_min_z, double p_max_x, double p_max_z, LocalVector<uint32_t> &r_boxes);
 	// Whether a region the grid does not answer for, on a layer in `p_mask`, meets
@@ -127,9 +137,9 @@ public:
 	}
 	// Horizontal gap between box `p_box` and the capsule from `p_a` to `p_b` of radius
 	// `p_radius`; negative or zero when they overlap. `r_normal` points from the box
-	// to the capsule, and `r_point` is the nearest point of the box, at y = 0; both
-	// are zero when the capsule's axis is inside the box.
-	static double gap(const Box &p_box, const Vector3 &p_a, const Vector3 &p_b, double p_radius, Vector3 &r_normal, Vector3 &r_point);
+	// to the capsule, and `r_point` is the nearest point of the box; both are zero
+	// when the capsule's axis is inside the box.
+	static double gap(const Box &p_box, const Flat &p_a, const Flat &p_b, double p_radius, Flat &r_normal, Flat &r_point);
 
 	void set_collision_mask(uint32_t p_value);
 	uint32_t get_collision_mask() const { return collision_mask; }

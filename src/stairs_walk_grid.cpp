@@ -47,6 +47,7 @@ bool upright(const Basis &p_basis) {
 // grid itself when it has none. Call again after static geometry changes.
 void StairsWalkGrid::bake() {
 	_boxes.clear();
+	_box_sources.clear();
 	_unknown.clear();
 	_bodies.clear();
 	_baked = false;
@@ -199,9 +200,8 @@ void StairsWalkGrid::_add_body(StaticBody3D *p_body) {
 				box.bottom = at.origin.y - half.y * by.length();
 				box.top = at.origin.y + half.y * by.length();
 				box.layer = layer;
-				box.rid = p_body->get_rid();
-				box.id = p_body->get_instance_id();
 				_boxes.push_back(box);
+				_box_sources.push_back({ p_body->get_rid(), p_body->get_instance_id() });
 				continue;
 			}
 			_add_unknown(shape, at, layer);
@@ -254,6 +254,7 @@ void StairsWalkGrid::_index() {
 	if (!(bins_x * bins_z <= BINS_MAX)) {
 		// Refused, not half built: nothing is baked, so bodies keep their sweeps.
 		_boxes.clear();
+		_box_sources.clear();
 		_bodies.clear();
 		_bins_x = 0;
 		_bins_z = 0;
@@ -328,31 +329,31 @@ bool StairsWalkGrid::unanswered(double p_min_x, double p_min_z, double p_max_x, 
 	return false;
 }
 
-double StairsWalkGrid::gap(const Box &p_box, const Vector3 &p_a, const Vector3 &p_b, double p_radius, Vector3 &r_normal, Vector3 &r_point) {
-	auto local = [&](const Vector3 &p_point) {
+double StairsWalkGrid::gap(const Box &p_box, const Flat &p_a, const Flat &p_b, double p_radius, Flat &r_normal, Flat &r_point) {
+	auto local = [&](const Flat &p_point) {
 		const double dx = p_point.x - p_box.cx;
 		const double dz = p_point.z - p_box.cz;
-		return Vector3(dx * p_box.ux + dz * p_box.uz, 0.0, dx * p_box.vx + dz * p_box.vz);
+		return Flat(dx * p_box.ux + dz * p_box.uz, dx * p_box.vx + dz * p_box.vz);
 	};
-	const Vector3 a = local(p_a);
-	const Vector3 b = local(p_b);
-	r_normal = Vector3();
-	r_point = Vector3();
+	const Flat a = local(p_a);
+	const Flat b = local(p_b);
+	r_normal = Flat();
+	r_point = Flat();
 	if ((std::abs(a.x) <= p_box.hx && std::abs(a.z) <= p_box.hz) || (std::abs(b.x) <= p_box.hx && std::abs(b.z) <= p_box.hz)) {
 		return -p_radius;
 	}
-	const Vector3 corners[4] = {
-		Vector3(-p_box.hx, 0.0, -p_box.hz),
-		Vector3(p_box.hx, 0.0, -p_box.hz),
-		Vector3(p_box.hx, 0.0, p_box.hz),
-		Vector3(-p_box.hx, 0.0, p_box.hz),
+	const Flat corners[4] = {
+		Flat(-p_box.hx, -p_box.hz),
+		Flat(p_box.hx, -p_box.hz),
+		Flat(p_box.hx, p_box.hz),
+		Flat(-p_box.hx, p_box.hz),
 	};
 	double best = INFINITY;
-	Vector3 apart;
-	Vector3 nearest;
+	Flat apart;
+	Flat nearest;
 	for (int e = 0; e < 4; e++) {
-		Vector3 on_axis;
-		Vector3 on_edge;
+		Flat on_axis;
+		Flat on_edge;
 		closest_on_segments(a, b, corners[e], corners[(e + 1) % 4], on_axis, on_edge);
 		const double distance = (on_axis - on_edge).length();
 		if (distance < best) {
@@ -362,9 +363,9 @@ double StairsWalkGrid::gap(const Box &p_box, const Vector3 &p_a, const Vector3 &
 		}
 	}
 	if (best > 1e-9) {
-		const Vector3 n = apart / best;
-		r_normal = Vector3(p_box.ux * n.x + p_box.vx * n.z, 0.0, p_box.uz * n.x + p_box.vz * n.z);
-		r_point = Vector3(p_box.cx + p_box.ux * nearest.x + p_box.vx * nearest.z, 0.0,
+		const Flat n = apart / best;
+		r_normal = Flat(p_box.ux * n.x + p_box.vx * n.z, p_box.uz * n.x + p_box.vz * n.z);
+		r_point = Flat(p_box.cx + p_box.ux * nearest.x + p_box.vx * nearest.z,
 				p_box.cz + p_box.uz * nearest.x + p_box.vz * nearest.z);
 	}
 	return best - p_radius;
