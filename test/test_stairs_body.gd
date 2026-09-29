@@ -69,6 +69,7 @@ func _run_all() -> void:
 	await _case_b33_a_body_moved_every_fourth_frame_keeps_its_crowd_distance()
 	await _case_b34_a_stretched_frame_climbs_a_step_and_drops_off_a_ledge()
 	await _case_b35_a_crowd_push_given_on_a_skipped_frame_is_kept()
+	await _case_b36_a_long_move_wedged_between_neighbours_stops_outside_them()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -1466,6 +1467,53 @@ func _case_b33_a_body_moved_every_fourth_frame_keeps_its_crowd_distance() -> voi
 			and closest > 2.0 * BODY_RADIUS - CROWD_TOLERANCE
 		),
 		"%.4f m apart expected %.2f, closest %.4f" % [apart, 2.0 * BODY_RADIUS, closest],
+	)
+	world.queue_free()
+
+
+## Walked at time scale 4 into a gap narrower than itself, among four crowd bodies
+## that are never moved and so hold still, a body stops outside all of them, as it
+## does moved every frame. Projected out of one only into another, its long move
+## is cut rather than left inside them.
+func _case_b36_a_long_move_wedged_between_neighbours_stops_outside_them() -> void:
+	const SPEED: float = 6.0
+	const EVERY: int = 4
+	const TICKS: int = 80
+	var world: Node3D = _new_world()
+	_add_box(world, Vector3(20.0, 1.0, 8.0), Vector3(0.0, -0.5, 0.0))
+	var a: StairsBody = _add_crowd_body(world, Vector3(-1.5, REST_Y, 0.0))
+	var others: Array[StairsBody] = []
+	for at: Vector3 in [
+		Vector3(0.0, 0.0, -0.55),
+		Vector3(0.05, 0.0, 0.52),
+		Vector3(0.5, 0.0, -0.2),
+		Vector3(0.5, 0.0, 0.3),
+	]:
+		others.append(_add_crowd_body(world, at + Vector3(0.0, REST_Y, 0.0)))
+	var closest: float = INF
+	for i: int in TICKS:
+		await get_tree().physics_frame
+		if i % EVERY != 0:
+			continue
+		a.velocity = Vector3(SPEED, a.velocity.y - GRAVITY * DELTA * EVERY, 0.0)
+		a.desired_velocity = Vector3(SPEED, 0.0, 0.0)
+		a.move_and_stair_step(float(EVERY))
+		for other: StairsBody in others:
+			closest = minf(closest, a.global_position.distance_to(other.global_position))
+	var least: float = 2.0 * BODY_RADIUS - 2.0 * CROWD_TOLERANCE
+	var touching: int = 0
+	for k: int in a.get_contact_count():
+		var collider: StairsBody = a.get_contact_collider(k) as StairsBody
+		touching += int(collider != null and others.has(collider))
+	var speed: float = Vector2(a.velocity.x, a.velocity.z).length()
+	_check(
+		"b36 a long move wedged between neighbours stops outside them",
+		closest > least and a.global_position.x < 0.5 and touching > 0 and speed < SPEED * 0.5,
+		(
+			"closest %.4f m expected over %.3f, stopped at x %.3f, %d neighbours touched,"
+			+ " speed %.2f m/s left of %.1f"
+		)
+		% [closest, least, a.global_position.x, touching, speed, SPEED],
 	)
 	world.queue_free()
 

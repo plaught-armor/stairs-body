@@ -743,32 +743,32 @@ bool StairsBody::_crowd_gather() {
 // the position step of position-based dynamics, against neighbours held still.
 // Lists the neighbours touched where the body ends, and clips velocity against them.
 Vector3 StairsBody::_crowd_solve(const Vector3 &p_motion) {
-	Vector3 offset = p_motion * HORIZONTAL_MASK + _crowd_pending;
-	_crowd_pending = Vector3();
-	for (int pass = 0; pass < CROWD_PASSES && !_neighbours.is_empty(); pass++) {
-		bool moved = false;
-		for (const Neighbour &n : _neighbours) {
-			if (_feet_apart(_me, offset, n, Vector3(), n.least_gap)) {
-				continue;
-			}
-			Vector3 normal;
-			const double gap = _foot_gap(_me, offset, n, Vector3(), normal);
-			if (gap < n.least_gap) {
-				offset += normal * (n.least_gap - gap);
-				moved = true;
-			}
-		}
-		if (!moved) {
+	// Wedged between neighbours, a long move can be projected out of one only into
+	// another, and the passes end with it still inside them. Its own motion is then
+	// cut, down to none, until the passes settle; the push it owes is kept whole.
+	// With no motion of its own left it takes what the passes give, settled or not,
+	// as a move with none always did. The neighbours within reach of the motion it
+	// gave up are the ones it is wedged against, and count as touched.
+	static constexpr double SHARES[] = { 1.0, 0.5, 0.25, 0.0 };
+	const Vector3 walk = p_motion * HORIZONTAL_MASK;
+	Vector3 offset;
+	double share = 0.0;
+	for (const double tried : SHARES) {
+		share = tried;
+		offset = walk * share + _crowd_pending;
+		if (_crowd_project(offset)) {
 			break;
 		}
 	}
+	_crowd_pending = Vector3();
+	const double touch = safe_margin + walk.length() * (1.0 - share);
 	for (const Neighbour &n : _neighbours) {
-		if (_feet_apart(_me, offset, n, Vector3(), safe_margin)) {
+		if (_feet_apart(_me, offset, n, Vector3(), touch)) {
 			continue;
 		}
 		Vector3 normal;
 		const double gap = _foot_gap(_me, offset, n, Vector3(), normal);
-		if (gap > safe_margin) {
+		if (gap > touch) {
 			continue;
 		}
 		Contact contact;
@@ -781,6 +781,29 @@ Vector3 StairsBody::_crowd_solve(const Vector3 &p_motion) {
 		}
 	}
 	return offset + Vector3(0, p_motion.y, 0);
+}
+
+// Projects `offset` out of the gathered neighbours, a few passes over them in turn.
+// Returns whether a pass found nothing left to correct.
+bool StairsBody::_crowd_project(Vector3 &r_offset) const {
+	for (int pass = 0; pass < CROWD_PASSES && !_neighbours.is_empty(); pass++) {
+		bool moved = false;
+		for (const Neighbour &n : _neighbours) {
+			if (_feet_apart(_me, r_offset, n, Vector3(), n.least_gap)) {
+				continue;
+			}
+			Vector3 normal;
+			const double gap = _foot_gap(_me, r_offset, n, Vector3(), normal);
+			if (gap < n.least_gap - CROWD_SETTLED) {
+				r_offset += normal * (n.least_gap - gap);
+				moved = true;
+			}
+		}
+		if (!moved) {
+			return true;
+		}
+	}
+	return _neighbours.is_empty();
 }
 
 // No motion of its own this frame: nothing horizontal, not rising, no intent and no

@@ -12,7 +12,7 @@ It does not track upstream and does not send changes back. The four-phase steppi
 algorithm (up, forward, down, commit) is Andrea Jörgensen's, and `StairsBody`
 still follows it.
 
-The test suites run headless under **both** Godot Physics and Jolt, 65 checks,
+The test suites run headless under **both** Godot Physics and Jolt, 100 checks,
 green on each.
 
 ## Why a move loop of its own
@@ -380,19 +380,25 @@ once from its shapes' bounds, and is kept apart in two ways:
   world with the move and never shoves the member into a wall. A member not moved
   that frame keeps its push for its next move.
 - Each move's own motion is kept out of the neighbours, so a member walking into
-  one stops at it, as a sweep would stop it.
+  one stops at it, as a sweep would stop it. A member wedged between neighbours,
+  whose move can be kept out of one only by pushing it into another, has its own
+  motion cut until it fits, down to none, and counts the neighbours it was wedged
+  against as touched. Without the cut, a long move, such as one stretched by
+  `time_scale`, ended inside them: at a time scale of 4 a pile of 96 overlapped by
+  35 mm on average, against 6.5 mm now at any time scale.
 
 Neighbours are read from a snapshot taken at the start of the frame, which each
 member brings up to date as it moves, so no move asks the engine where its
-neighbours are. A member moved by other code during the frame, by setting its
-position, is seen where the frame began until the next frame.
+neighbours are. A member moved or turned by other code during the frame, after
+its own move, is seen as it was when the frame began, or as its move left it,
+until the next frame.
 
 Neighbours touched are listed in the [contact list](#contacts), with the other
 member as collider and a horizontal normal pointing back at this body, and
 velocity is clipped against them.
 
-`test/bench_pile.gd -- --crowd`, 96 box-shaped bodies pressed into a pile, costs 12.9
-µs per body on Godot Physics and 8.7 on Jolt, against 47 and 32 with collision. Of
+`test/bench_pile.gd -- --crowd`, 96 box-shaped bodies pressed into a pile, costs 12.3
+µs per body on Godot Physics and 8.9 on Jolt, against 47 and 32 with collision. Of
 that, the separation itself is under 3 µs; the rest is the sweeps against the
 floor. The same bodies standing apart and still cost what they cost without it.
 
@@ -428,8 +434,8 @@ and makes its ordinary sweeps wherever the grid cannot answer.
 | pressed into a tall wall | 1.3 | 41 | 19 |
 | climbing a flight | 1.0 | 18.4 | 12.1 |
 
-In the pile of 96 (`bench_pile.gd -- --crowd --grid`) a body costs 4.1 µs, against
-12.9 and 8.7; the grid's own work is about 0.3 µs of that.
+In the pile of 96 (`bench_pile.gd -- --crowd --grid`) a body costs 4.4 µs, against
+12.3 and 8.9; the grid's own work is about 0.3 µs of that.
 
 ### Setting it up
 
@@ -584,10 +590,10 @@ Runs three headless suites and exits with the total number of failures:
 
 - `test/test_stairs.gd`, 43 checks. They began as `StairsCharacter`'s suite and
   kept its case numbers, so the gaps are cases that tested that class's own API.
-- `test/test_stairs_body.gd`, 36 checks for machinery the first suite does not
+- `test/test_stairs_body.gd`, 37 checks for machinery the first suite does not
   reach: the tunnel guard, the refusal cache, the loose-step rule, the Jolt edge
   handling, `step_ignore_layers`, the contact list and crowd separation.
-- `test/test_walk_grid.gd`, 18 checks that run each scenario on a walk grid and by
+- `test/test_walk_grid.gd`, 20 checks that run each scenario on a walk grid and by
   sweeps, and compare where the two end.
 
 Each builds its worlds procedurally. Build the extension with `scons` first;

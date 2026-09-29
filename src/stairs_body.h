@@ -102,6 +102,10 @@ private:
 	static constexpr double CROWD_LOOKAHEAD = 0.05;
 	// Projection passes against the gathered neighbours.
 	static constexpr int CROWD_PASSES = 4;
+	// A correction below this, in metres, counts as none when projecting a move out
+	// of the neighbours: without it, rounding left by the last correction reads as
+	// unsettled and every move would be cut.
+	static constexpr double CROWD_SETTLED = 1e-6;
 	// Overlap between crowd footprints that separation leaves alone, in metres; deeper
 	// overlap is still pushed all the way back to touching. Box2D's b2_linearSlop, 5 mm,
 	// for the same reason: resolved to touching every frame, a still pile was nudged
@@ -259,6 +263,7 @@ private:
 	Neighbour _foot_world(const Transform3D &p_xform) const;
 	bool _crowd_gather();
 	void _crowd_publish();
+	bool _crowd_project(Vector3 &r_offset) const;
 	static bool _feet_apart(const Neighbour &p_a, const Vector3 &p_a_shift, const Neighbour &p_b, const Vector3 &p_b_shift, double p_gap);
 	void _move(double p_time_scale);
 	Vector3 _crowd_solve(const Vector3 &p_motion);
