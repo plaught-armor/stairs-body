@@ -359,6 +359,7 @@ on a baked box again, when:
 | would drop further than the step-down reach | it falls, by sweeps |
 | would step up under a ceiling too low for it | the sweeps refuse that step |
 | is near a static shape the grid left out | the grid cannot answer there |
+| is near a body that may move | the grid does not know where it will be |
 | is more than 5 mm from the grid's floor | it is not standing where the grid says |
 
 **Keeping up with the level.** A baked body that leaves the tree drops out of the
@@ -369,6 +370,36 @@ parent, a baked body moved or given other layers, or a change to the grid's
 `is_stale()` catches all of them by comparing every baked body's transform and
 layers with what was baked, so it costs a pass over the baked bodies.
 
+**Bodies that may move.** Every `PhysicsBody3D` under the grid's parent other
+than a plain `StaticBody3D`, a `StairsBody`, or a body under a `StairsBody` (a
+ragdoll bone, a held item, which moves with it) is tracked rather than baked:
+animatable, rigid and character bodies. Each one's local bounds are measured once
+from its shapes, at its first read; `bake()` measures them again. As each physics
+frame starts, on the tree's `physics_frame` signal, the grid reads every tracked
+body's transform and layers into flat min/max arrays and merges them into one
+union box. Each box is grown by how far any corner moved since the last read,
+turning included (the origin's move plus the basis change times the farthest
+corner's distance), so a door moving at steady speed is covered through the
+frame. A grid move tests its reach against the union first and, only when it
+meets it, scans the arrays for a body on its mask.
+
+A body added under the parent is queued and first read, ungrown, at the next move
+that asks or the next snapshot, whichever comes first: a spawner adds a body to
+the tree before it places it, so a read on adding would find it at the scene's
+origin and grow it by the distance to where it was put. One that leaves the tree
+drops out once it has left (`tree_exited`), and one freed without that signal,
+from an ancestor's exit handler or with its signals blocked, is found gone by the
+next snapshot, which checks each body's id is still live before touching it. While
+the grid itself is out of the tree it cannot follow them, so every move on it
+sweeps. A sleeping `RigidBody3D` is kept but not read again until it
+wakes (`sleeping_state_changed`), unless it is frozen: a body frozen in
+`FREEZE_MODE_STATIC` and then moved by script stays asleep under both engines, and
+freezing sends no signal, so a sleeping body's freeze flag is checked each frame.
+A body teleported during a frame is seen from the next frame. `StairsBody` nodes
+are left to crowd separation. A shape with no finite bounds, a
+`WorldBoundaryShape3D`, makes its body reach everywhere; a
+`SeparationRayShape3D` reaches along its length.
+
 **Differences from the sweeps:**
 
 - The footprint is the crowd footprint, a capsule lying flat. A box-shaped body's
@@ -376,7 +407,8 @@ layers with what was baked, so it costs a pass over the baked bodies.
 - A step up under Godot Physics carries a body up to `min_step_forward` past where
   its velocity takes it; on the grid a moving body goes only as far as its
   velocity takes it.
-- Nothing that moves is seen, other `StairsBody` nodes included.
+- Other `StairsBody` nodes are seen only through crowd separation, and bodies
+  outside the grid's parent not at all.
 - Main thread only.
 
 **Cost.** `test/bench_frame.gd -- --grid`, in microseconds per character per
@@ -391,6 +423,13 @@ frame:
 In the pile of 96 (`bench_pile.gd -- --crowd --grid`) a body costs 3.7 µs on Godot
 Physics and 3.8 on Jolt, against 12.0 and 8.3 by sweeps; the grid's own work is
 about 0.3 µs of that, and crowd separation most of the rest.
+
+Tracking costs about 0.1 µs per awake body per frame, 27 µs on Godot Physics and
+19 on Jolt for 256 loose boxes lying against each other, which keeps them awake
+(`-- --props 256`), and about 25 ns per sleeping one, which is only asked whether
+it is frozen: 64 boxes spread apart and asleep cost 1.2 to 1.9 µs. With no
+tracked body near, a move pays one box test against the union; the pile's cost
+per body did not change with 64 boxes around it.
 
 ## Physics engines
 
@@ -424,8 +463,9 @@ failures:
 - `test/test_stairs_body.gd`, 37 checks for machinery the first suite does not
   reach: the tunnel guard, the refusal cache, the loose-step rule, the Jolt edge
   handling, `step_ignore_layers`, the contact list and crowd separation.
-- `test/test_walk_grid.gd`, 22 checks that run each scenario on a walk grid and by
-  sweeps, and compare where the two end.
+- `test/test_walk_grid.gd`, 32 checks that run each scenario on a walk grid and by
+  sweeps, and compare where the two end, and check that bodies that may move are
+  seen.
 
 Each builds its worlds procedurally, and all pass under both Godot Physics and
 Jolt.
@@ -435,6 +475,6 @@ The benchmarks:
 - `bench_frame.gd` measures the per-frame cost of one character in several
   situations (`-- --grid` on a walk grid);
 - `bench_pile.gd` measures a crowd pressed together (`-- --crowd`, `-- --grid`,
-  `-- --idle`, `-- --every N` for bodies moved every Nth frame, and `-- --settle`
-  for a pile that has stopped);
+  `-- --idle`, `-- --every N` for bodies moved every Nth frame, `-- --settle`
+  for a pile that has stopped, and `-- --props N` for loose boxes the grid tracks);
 - `bench_primitive.gd` measures what each physics query costs by itself.

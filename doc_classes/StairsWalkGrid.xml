@@ -5,7 +5,8 @@
 	</brief_description>
 	<description>
 		Give it to a [StairsBody] as [member StairsBody.walk_grid], and while the body walks on what it baked, its moves make no physics queries: it moves over the boxes analytically, the way crowds in shipped games walk on baked navigation data and use physics only when they must.
-		Bakes the [StaticBody3D] nodes under its parent, or under itself when it has none. Boxes turned only about the vertical, at any scale, on a layer in [member collision_mask], are baked. Every other static shape there is kept as a region the grid does not answer for, and a body that collides with it sweeps near it: other shapes, boxes tilted off the vertical, bodies on layers outside the mask, and conveyors (a nonzero [member StaticBody3D.constant_linear_velocity] or [member StaticBody3D.constant_angular_velocity]). A level whose ground is one trimesh or [WorldBoundaryShape3D] is therefore walked by sweeps throughout. [AnimatableBody3D] and other bodies that move are not baked, and a body walking on the grid does not see them.
+		Bakes the [StaticBody3D] nodes under its parent, or under itself when it has none. Boxes turned only about the vertical, at any scale, on a layer in [member collision_mask], are baked. Every other static shape there is kept as a region the grid does not answer for, and a body that collides with it sweeps near it: other shapes, boxes tilted off the vertical, bodies on layers outside the mask, and conveyors (a nonzero [member StaticBody3D.constant_linear_velocity] or [member StaticBody3D.constant_angular_velocity]). A level whose ground is one trimesh or [WorldBoundaryShape3D] is therefore walked by sweeps throughout.
+		Bodies that may move are tracked instead of baked: every [PhysicsBody3D] under the same parent except plain [StaticBody3D] nodes, [StairsBody] nodes and bodies under a [StairsBody], which move with it; so [AnimatableBody3D], [RigidBody3D] and [CharacterBody3D] nodes. Their bounds are read once per physics frame, as it starts, and grown by how far each moved since the last read, turning included; a grid move whose reach meets one on a layer in the walker's [member CollisionObject3D.collision_mask] is made by sweeps. A body added is first read where it has been placed, at the next move that asks or the next frame. A sleeping [RigidBody3D] is not read again until it wakes or while it is frozen, and a body teleported during a frame is seen from the next one. A tracked body's shapes are measured once, when it is first read; call [method bake] after changing them. Another [StairsBody] is seen only through crowd separation, and a body outside the parent is not seen at all. While the grid itself is outside the tree it cannot follow them, so every move on it is made by sweeps.
 		It bakes the first time a body uses it; call [method bake] while the level loads to keep that cost off a frame. A baked body that leaves the tree drops out of the index at once. Other changes to the level leave the index stale until [method bake] is called again; see [method is_stale]. A level too large to index, past 16 million 2 m bins, bakes nothing and says so, and bodies sweep. Main thread only.
 	</description>
 	<tutorials>
@@ -21,6 +22,12 @@
 			<return type="int" />
 			<description>
 				Number of boxes baked, less those of bodies that have since left the tree.
+			</description>
+		</method>
+		<method name="get_mover_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Number of bodies that may move being tracked, less those that have since left the tree.
 			</description>
 		</method>
 		<method name="get_unknown_count" qualifiers="const">

@@ -34,6 +34,9 @@ extends Node3D
 ## which every body moves with no velocity and so takes any crowd push it still
 ## owes.
 ##
+## `--props N` adds N loose boxes, RigidBody3D nodes, in a ring 6 m out, clear of
+## the pile, for the cost of a walk grid tracking bodies that may move.
+##
 ## `--turn-after` turns each body toward its wish after its move rather than before,
 ## and `--seed N` jitters where the bodies spawn, for sweeps over several piles.
 ## `--settle` stops every body SETTLE_FRAMES before the timed frames, its horizontal
@@ -52,6 +55,8 @@ const ACCEL: float = 0.15
 const GRAVITY_STEP: float = 0.16
 const WORLD_LAYER: int = 1
 const CROWD_LAYER: int = 32
+# Metres from the centre of the ring --props lays out.
+const PROP_RING: float = 6.0
 
 var _bodies: Array[StairsBody] = []
 var _wish_speed: float = 0.0 if OS.get_cmdline_user_args().has("--idle") else WISH
@@ -68,12 +73,17 @@ var _accel: float = 1.0 - pow(1.0 - ACCEL, float(_every))
 var _turn_after: bool = OS.get_cmdline_user_args().has("--turn-after")
 var _seed: int = _flag_int("--seed", -1)
 var _settle: bool = OS.get_cmdline_user_args().has("--settle")
+var _props: int = _flag_int("--props", 0)
 
 
 func _ready() -> void:
 	var bad: String = _bad_flag()
 	if not bad.is_empty():
 		push_error(bad)
+		get_tree().quit(1)
+		return
+	if _props > 0 and not _grid_asked:
+		push_error("--props needs --grid: the boxes are there for the walk grid to track")
 		get_tree().quit(1)
 		return
 	if _grid_asked and not _crowd:
@@ -98,6 +108,9 @@ func _run() -> void:
 	if _crowd and _grid_asked:
 		_grid = StairsWalkGrid.new()
 		add_child(_grid)
+	for i: int in _props:
+		var angle: float = TAU * float(i) / float(_props)
+		_spawn_prop(Vector3(cos(angle) * PROP_RING, 0.15, sin(angle) * PROP_RING))
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.seed = maxi(_seed, 0)
 	for i: int in BODIES:
@@ -180,6 +193,19 @@ func _overlap() -> Vector2:
 	return Vector2(total / float(BODIES), deepest)
 
 
+## A loose 0.3 m box on the world layer.
+func _spawn_prop(at: Vector3) -> void:
+	var prop: RigidBody3D = RigidBody3D.new()
+	prop.collision_layer = WORLD_LAYER
+	var shape_node: CollisionShape3D = CollisionShape3D.new()
+	var box: BoxShape3D = BoxShape3D.new()
+	box.size = Vector3(0.3, 0.3, 0.3)
+	shape_node.shape = box
+	prop.add_child(shape_node)
+	add_child(prop)
+	prop.global_position = at
+
+
 func _spawn(at: Vector3) -> StairsBody:
 	var body: StairsBody = StairsBody.new()
 	body.collision_layer = CROWD_LAYER
@@ -205,7 +231,7 @@ func _spawn(at: Vector3) -> StairsBody:
 ## Why the numeric flags cannot be used, or empty when they can.
 func _bad_flag() -> String:
 	var args: PackedStringArray = OS.get_cmdline_user_args()
-	for flag: String in ["--every", "--seed"]:
+	for flag: String in ["--every", "--seed", "--props"]:
 		var at: int = args.find(flag)
 		if at >= 0 and (at + 1 >= args.size() or not args[at + 1].is_valid_int()):
 			return "%s needs a whole number after it" % flag
@@ -215,6 +241,8 @@ func _bad_flag() -> String:
 		return "--settle takes --every up to %d, so the pile forms before it stops" % SETTLE_FRAMES
 	if args.has("--seed") and _seed < 0:
 		return "--seed needs 0 or more"
+	if _props < 0:
+		return "--props needs 0 or more"
 	return ""
 
 

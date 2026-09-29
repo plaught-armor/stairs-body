@@ -161,7 +161,10 @@ bool StairsBody::_walk_on_grid(const Transform3D &p_xform, double p_delta) {
 	uint32_t floor_box = 0;
 	Flat shift;
 	bool hit = false;
-	const bool walked = !grid->unanswered(min_x, min_z, max_x, max_z, foot.bottom - _step_down_reach() - WALK_ENTRY, foot.top + step_height, get_collision_mask()) &&
+	const double bottom = foot.bottom - _step_down_reach() - WALK_ENTRY;
+	const double top = foot.top + step_height;
+	const bool walked = !grid->unanswered(min_x, min_z, max_x, max_z, bottom, top, get_collision_mask()) &&
+			!grid->mover_near(min_x, min_z, max_x, max_z, bottom, top, get_collision_mask()) &&
 			_grid_floor(*grid, foot, Flat(), floor, floor_box) && std::abs(foot.bottom - floor) <= WALK_ENTRY &&
 			(probe == Flat() ? _grid_sweep(*grid, foot, motion, shift, hit) : _grid_intent_step(*grid, foot, probe, floor, shift, hit)) &&
 			_grid_floor(*grid, foot, shift, floor, floor_box) && foot.bottom - floor <= _step_down_reach() + GRID_SLACK;

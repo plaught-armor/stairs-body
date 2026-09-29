@@ -193,6 +193,7 @@ walk on it without physics queries. See [Walk grid](#walk-grid).
 | `is_stale()` | Whether the level has changed since the last `bake()` in a way the index has not followed. It checks every indexed body, so call it after editing the level, not every frame. |
 | `get_box_count()` | How many boxes are indexed. |
 | `get_unknown_count()` | How many static shapes it left out, so bodies near them use physics instead. |
+| `get_mover_count()` | How many bodies that could move it watches, so bodies near them use physics instead. |
 
 ## Guides
 
@@ -336,51 +337,28 @@ func _ready() -> void:
     _grid.bake()
 ```
 
-**Choose which bodies use it.** A body on the grid sees only the level's boxes,
-not anything that moves: not the player, not doors or platforms, not other
-characters. So keep bodies near the player off it. Distance is the usual rule:
+**Things that move.** The grid watches every physics body under the same parent
+that could move: `AnimatableBody3D` doors and platforms, `RigidBody3D` props,
+`CharacterBody3D` characters. A body on the grid that comes near one uses its
+normal physics moves until it is clear. So keep the player, doors and props under
+the level's root with the grid, and bodies can stay on it everywhere.
+
+It measures each body's shapes once; call `bake()` after changing them. It does
+not watch other `StairsBody` nodes (give the crowd `crowd_layers`, below), bodies
+under a `StairsBody` such as a held item, which move with it, or anything outside
+the grid's parent. Take a body that has to meet something outside off the grid
+near it:
 
 ```gdscript
 func _physics_process(delta: float) -> void:
-    var far: bool = global_position.distance_squared_to(_player.global_position) > 15.0 * 15.0
-    walk_grid = _grid if far else null
+    var near: bool = global_position.distance_squared_to(_outsider.global_position) < 4.0 * 4.0
+    walk_grid = null if near else _grid
     velocity.y -= gravity * delta
     move_and_stair_step()
 ```
 
 Switching is free: set `walk_grid` at any time, even every frame.
 `is_on_walk_grid()` tells you which way the last move went.
-
-**Keep bodies off it near moving things.** Distance to the player covers only the
-player. For doors, rolling props or platforms, ask physics every few frames
-whether one is near. That query is the kind of cost the grid saves, so don't ask
-every frame, and make the radius big enough to cover how far things move between
-checks:
-
-```gdscript
-const MOVERS: int = 1 << 3 # the layers of things that move; not the crowd's own
-const RECHECK: int = 10 # frames between checks
-
-var _near: PhysicsShapeQueryParameters3D = PhysicsShapeQueryParameters3D.new()
-var _mover_near: bool = false
-
-func _ready() -> void:
-    var sphere: SphereShape3D = SphereShape3D.new()
-    sphere.radius = 4.0
-    _near.shape = sphere
-    _near.collision_mask = MOVERS
-    _near.exclude = [get_rid()]
-
-func _physics_process(delta: float) -> void:
-    if (Engine.get_physics_frames() + get_instance_id()) % RECHECK == 0:
-        _near.transform = global_transform
-        _mover_near = not get_world_3d().direct_space_state.intersect_shape(_near, 1).is_empty()
-    walk_grid = null if _mover_near else _grid
-    velocity.y -= gravity * delta
-    move_and_stair_step()
-```
-
-Adding the instance id spreads a crowd's checks over different frames.
 
 **Give a crowd on the grid `crowd_layers`.** Bodies on the grid don't collide with
 each other at all, so without [crowd separation](#crowds) they walk through each
@@ -399,10 +377,11 @@ So a level built from boxes walks on the grid almost everywhere. A level whose
 ground is one imported mesh does not: bodies there always use physics.
 
 **Changing the level.** Freeing a box the grid indexed removes it from the grid
-straight away. Anything else (adding static bodies, moving them, changing their
-layers or the grid's `collision_mask`) is not seen until you call `bake()` again.
-Adding a body and changing the mask print a warning; `is_stale()` tells you
-whether a re-bake is needed.
+straight away, and bodies that could move are watched from the moment they are
+added until they are freed. Anything else (adding static bodies, moving them,
+changing their layers or the grid's `collision_mask`) is not seen until you call
+`bake()` again. Adding a static body and changing the mask print a warning;
+`is_stale()` tells you whether a re-bake is needed.
 
 [How the grid works and what it costs](docs/technical.md#walk-grid).
 
@@ -425,7 +404,8 @@ the two here. To run under Jolt, drop an `override.cfg` beside `project.godot`:
 - Only tested with cylinder colliders when climbing.
 - Crowd separation and the walk grid run on the main thread only.
 - Crowd members never stand on each other.
-- A body on the walk grid does not see anything that moves.
+- A body on the walk grid does not see other `StairsBody` nodes, except through
+  crowd separation, or bodies outside the grid's parent.
 - Prebuilt binaries are Linux x86_64 only.
 
 ## Tests

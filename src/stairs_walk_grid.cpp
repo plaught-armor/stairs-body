@@ -1,10 +1,15 @@
 #include "stairs_walk_grid.h"
+#include "stairs_body.h"
 #include "stairs_geometry.h"
 
 #include <godot_cpp/classes/animatable_body3d.hpp>
 #include <godot_cpp/classes/box_shape3d.hpp>
+#include <godot_cpp/classes/physics_body3d.hpp>
+#include <godot_cpp/classes/rigid_body3d.hpp>
 #include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/separation_ray_shape3d.hpp>
 #include <godot_cpp/classes/static_body3d.hpp>
+#include <godot_cpp/classes/world_boundary_shape3d.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/math.hpp>
 #include <godot_cpp/core/object.hpp>
@@ -50,6 +55,23 @@ void StairsWalkGrid::bake() {
 	_box_sources.clear();
 	_unknown.clear();
 	_bodies.clear();
+	_mover_min_x.clear();
+	_mover_min_y.clear();
+	_mover_min_z.clear();
+	_mover_max_x.clear();
+	_mover_max_y.clear();
+	_mover_max_z.clear();
+	_mover_layer.clear();
+	_mover_asleep.clear();
+	_mover_sources.clear();
+	_mover_slots.clear();
+	_mover_pending.clear();
+	_union_min_x = INFINITY;
+	_union_min_y = INFINITY;
+	_union_min_z = INFINITY;
+	_union_max_x = -INFINITY;
+	_union_max_y = -INFINITY;
+	_union_max_z = -INFINITY;
 	_baked = false;
 	_stale = false;
 	std::vector<Node *> stack;
@@ -68,6 +90,7 @@ void StairsWalkGrid::bake() {
 	}
 	_index();
 	_box_live = (uint32_t)_boxes.size();
+	_track_movers();
 	// A watch left from an earlier bake is kept rather than doubled; one left on a
 	// body no longer baked finds nothing to drop. The engine disconnects them all
 	// when the grid is freed.
@@ -99,13 +122,281 @@ void StairsWalkGrid::_on_body_exiting(uint64_t p_id) {
 }
 
 void StairsWalkGrid::_on_node_added(Node *p_node) {
-	if (!_baked || _stale || Object::cast_to<StaticBody3D>(p_node) == nullptr || Object::cast_to<AnimatableBody3D>(p_node) != nullptr) {
+	PhysicsBody3D *body = Object::cast_to<PhysicsBody3D>(p_node);
+	if (!_baked || body == nullptr) {
 		return;
 	}
 	const Node *root = get_parent() != nullptr ? get_parent() : this;
-	if (root->is_ancestor_of(p_node)) {
+	if (!root->is_ancestor_of(p_node)) {
+		return;
+	}
+	if (Object::cast_to<StaticBody3D>(p_node) == nullptr || Object::cast_to<AnimatableBody3D>(p_node) != nullptr) {
+		_add_mover(body);
+	} else if (!_stale) {
 		_mark_stale("a static body was added under it");
 	}
+}
+
+// Tracks every body that may move under the grid's parent. Already tracked bodies
+// are passed over, so this also picks up bodies added while the grid was out of
+// the tree.
+void StairsWalkGrid::_track_movers() {
+	std::vector<Node *> stack;
+	stack.push_back(get_parent() != nullptr ? get_parent() : this);
+	for (int64_t visited = 0; !stack.empty(); visited++) {
+		ERR_FAIL_COND_MSG(visited >= NODES_MAX, "StairsWalkGrid: the tree is too large to track its moving bodies.");
+		Node *node = stack.back();
+		stack.pop_back();
+		PhysicsBody3D *body = Object::cast_to<PhysicsBody3D>(node);
+		if (body != nullptr && (Object::cast_to<StaticBody3D>(node) == nullptr || Object::cast_to<AnimatableBody3D>(node) != nullptr)) {
+			_add_mover(body);
+		}
+		for (int i = 0; i < node->get_child_count(); i++) {
+			stack.push_back(node->get_child(i));
+		}
+	}
+}
+
+// Tracks a body that may move. A StairsBody is passed over, since crowd separation
+// keeps those apart, and so is a body under one, such as a ragdoll bone or a held
+// item, which moves with it. It is first read at the next query or snapshot.
+void StairsWalkGrid::_add_mover(PhysicsBody3D *p_body) {
+	const uint64_t id = p_body->get_instance_id();
+	// A body outside the tree sends no exit signal to drop it by, and one whose
+	// exit has already run is out of the tree by the time its parent's runs.
+	if (_mover_slots.count(id) != 0 || !p_body->is_inside_tree()) {
+		return;
+	}
+	const Node *root = get_parent() != nullptr ? get_parent() : this;
+	for (const Node *node = p_body; node != nullptr && node != root; node = node->get_parent()) {
+		if (Object::cast_to<StairsBody>(node) != nullptr) {
+			return;
+		}
+	}
+	_mover_slots[id] = (uint32_t)_mover_sources.size();
+	MoverSource source;
+	source.id = id;
+	source.body = p_body;
+	source.rigid = Object::cast_to<RigidBody3D>(p_body);
+	_mover_sources.push_back(source);
+	_mover_min_x.push_back(0.0f);
+	_mover_min_y.push_back(0.0f);
+	_mover_min_z.push_back(0.0f);
+	_mover_max_x.push_back(0.0f);
+	_mover_max_y.push_back(0.0f);
+	_mover_max_z.push_back(0.0f);
+	_mover_layer.push_back(0);
+	_mover_asleep.push_back(0);
+	_mover_pending.push_back(id);
+	// Dropped once it has left, not as it starts to: a body re-added from another
+	// handler during the same exit, still inside the tree then, is dropped too.
+	const Callable watch = callable_mp(this, &StairsWalkGrid::_on_mover_exiting).bind(id);
+	if (!p_body->is_connected("tree_exited", watch)) {
+		p_body->connect("tree_exited", watch, CONNECT_ONE_SHOT);
+	}
+	if (RigidBody3D *rigid = source.rigid) {
+		const Callable sleep = callable_mp(this, &StairsWalkGrid::_on_mover_sleep_changed).bind(id);
+		if (!rigid->is_connected("sleeping_state_changed", sleep)) {
+			rigid->connect("sleeping_state_changed", sleep);
+		}
+	}
+}
+
+void StairsWalkGrid::_on_mover_sleep_changed(uint64_t p_id) {
+	const auto it = _mover_slots.find(p_id);
+	const RigidBody3D *rigid = Object::cast_to<RigidBody3D>(ObjectDB::get_instance(p_id));
+	if (it != _mover_slots.end() && rigid != nullptr) {
+		_mover_asleep[it->second] = rigid->is_sleeping() ? 1 : 0;
+	}
+}
+
+// A tracked body left the tree, and the physics space with it: its slot takes the
+// last one's. Its pointers are not used after this, so it may be freed.
+void StairsWalkGrid::_on_mover_exiting(uint64_t p_id) {
+	const auto it = _mover_slots.find(p_id);
+	if (it == _mover_slots.end()) {
+		return;
+	}
+	const uint32_t slot = it->second;
+	const uint32_t last = (uint32_t)_mover_sources.size() - 1;
+	_mover_slots.erase(it);
+	if (slot != last) {
+		_mover_sources[slot] = _mover_sources[last];
+		_mover_min_x[slot] = _mover_min_x[last];
+		_mover_min_y[slot] = _mover_min_y[last];
+		_mover_min_z[slot] = _mover_min_z[last];
+		_mover_max_x[slot] = _mover_max_x[last];
+		_mover_max_y[slot] = _mover_max_y[last];
+		_mover_max_z[slot] = _mover_max_z[last];
+		_mover_layer[slot] = _mover_layer[last];
+		_mover_asleep[slot] = _mover_asleep[last];
+		_mover_slots[_mover_sources[slot].id] = slot;
+	}
+	_mover_sources.pop_back();
+	_mover_min_x.pop_back();
+	_mover_min_y.pop_back();
+	_mover_min_z.pop_back();
+	_mover_max_x.pop_back();
+	_mover_max_y.pop_back();
+	_mover_max_z.pop_back();
+	_mover_layer.pop_back();
+	_mover_asleep.pop_back();
+}
+
+// Measures a tracked body's shapes in its own frame. A shape with no finite bounds
+// makes the body reach everywhere, a separation ray reaches along its length, and
+// an empty shape reaches nowhere.
+static void measure_mover(PhysicsBody3D *p_body, AABB &r_local, bool &r_known) {
+	const PackedInt32Array owners = p_body->get_shape_owners();
+	for (int64_t k = 0; k < owners.size(); k++) {
+		const uint32_t owner_id = owners[k];
+		if (p_body->is_shape_owner_disabled(owner_id)) {
+			continue;
+		}
+		const Transform3D at = p_body->shape_owner_get_transform(owner_id);
+		for (int i = 0; i < p_body->shape_owner_get_shape_count(owner_id); i++) {
+			const Ref<Shape3D> shape = p_body->shape_owner_get_shape(owner_id, i);
+			AABB local;
+			const SeparationRayShape3D *ray = Object::cast_to<SeparationRayShape3D>(shape.ptr());
+			if (ray != nullptr) {
+				local = AABB(Vector3(), Vector3(0.0, 0.0, ray->get_length()));
+			} else if (Object::cast_to<WorldBoundaryShape3D>(shape.ptr()) != nullptr) {
+				local = AABB(Vector3(-1e7, -1e7, -1e7), Vector3(2e7, 2e7, 2e7));
+			} else if (!shape_bounds(shape, local)) {
+				continue;
+			}
+			r_local = r_known ? r_local.merge(at.xform(local)) : at.xform(local);
+			r_known = true;
+		}
+	}
+}
+
+// Reads one tracked body's bounds and layers. The bounds are grown by how far any
+// corner moved since the last read, turning included, so one closing in at that
+// speed is met a frame early rather than late; a first read is not grown. Its
+// shapes are measured once, when it first has any.
+void StairsWalkGrid::_read_mover(uint32_t p_slot, bool p_first) {
+	MoverSource &source = _mover_sources[p_slot];
+	PhysicsBody3D *body = source.body;
+	if (!source.local_known) {
+		measure_mover(body, source.local, source.local_known);
+		const Vector3 far = source.local.position.abs().max(source.local.get_end().abs());
+		source.local_reach = far.length();
+	}
+	const Transform3D xform = body->get_global_transform();
+	const Transform3D last = p_first ? xform : source.last_xform;
+	source.last_xform = xform;
+	// A corner c moves by (B - B') c + (o - o'), no more than |o - o'| plus the
+	// basis change's Frobenius norm times |c|.
+	double turned = 0.0;
+	for (int r = 0; r < 3; r++) {
+		turned += (xform.basis.rows[r] - last.basis.rows[r]).length_squared();
+	}
+	const double moved = (xform.origin - last.origin).length() + std::sqrt(turned) * source.local_reach;
+	_mover_layer[p_slot] = source.local_known ? body->get_collision_layer() : 0;
+	const AABB world = xform.xform(source.local).grow(moved);
+	_mover_min_x[p_slot] = world.position.x;
+	_mover_min_y[p_slot] = world.position.y;
+	_mover_min_z[p_slot] = world.position.z;
+	_mover_max_x[p_slot] = world.position.x + world.size.x;
+	_mover_max_y[p_slot] = world.position.y + world.size.y;
+	_mover_max_z[p_slot] = world.position.z + world.size.z;
+}
+
+void StairsWalkGrid::_merge_union(uint32_t p_slot) {
+	_union_min_x = MIN(_union_min_x, _mover_min_x[p_slot]);
+	_union_min_y = MIN(_union_min_y, _mover_min_y[p_slot]);
+	_union_min_z = MIN(_union_min_z, _mover_min_z[p_slot]);
+	_union_max_x = MAX(_union_max_x, _mover_max_x[p_slot]);
+	_union_max_y = MAX(_union_max_y, _mover_max_y[p_slot]);
+	_union_max_z = MAX(_union_max_z, _mover_max_z[p_slot]);
+}
+
+// Whether the object with this id still exists: the engine's own lookup, which
+// compares the id's validator with its slot's, without the binding lookup
+// ObjectDB::get_instance adds. A tracked body is normally dropped when it leaves
+// the tree, but not if it is freed from an ancestor's exit handler after its own
+// exit ran, or with its signals blocked, so its cached pointers are used only
+// after this says it is live.
+static bool is_live(uint64_t p_id) {
+	return gdextension_interface::object_get_instance_from_id(p_id) != nullptr;
+}
+
+// First reads of the bodies added since the last read, which take their sleep
+// state from the body as well; one that left again has no slot.
+void StairsWalkGrid::_read_pending() {
+	for (const uint64_t id : _mover_pending) {
+		const auto it = _mover_slots.find(id);
+		// One that has left, is between leaving and its exit signal, or was freed
+		// without one, is skipped; the snapshot drops a freed one.
+		if (it == _mover_slots.end() || !is_live(id) || !_mover_sources[it->second].body->is_inside_tree()) {
+			continue;
+		}
+		const RigidBody3D *rigid = _mover_sources[it->second].rigid;
+		_mover_asleep[it->second] = rigid != nullptr && rigid->is_sleeping() ? 1 : 0;
+		_read_mover(it->second, true);
+		_merge_union(it->second);
+	}
+	_mover_pending.clear();
+}
+
+// Once per physics frame, before any node's _physics_process: every tracked body
+// where the physics step left it, which is where the engine's sweeps see it until
+// the next step.
+void StairsWalkGrid::_on_physics_frame() {
+	_read_pending();
+	const uint32_t count = (uint32_t)_mover_sources.size();
+	_union_min_x = INFINITY;
+	_union_min_y = INFINITY;
+	_union_min_z = INFINITY;
+	_union_max_x = -INFINITY;
+	_union_max_y = -INFINITY;
+	_union_max_z = -INFINITY;
+	std::vector<uint64_t> freed;
+	for (uint32_t i = 0; i < count; i++) {
+		if (!is_live(_mover_sources[i].id)) {
+			freed.push_back(_mover_sources[i].id);
+			continue;
+		}
+		// A frozen body can be moved by script while it stays asleep: a
+		// static-frozen one does not wake under either engine, and freezing sends
+		// no signal, so a sleeping body is asked each frame.
+		if (_mover_asleep[i] == 0 || _mover_sources[i].rigid->is_freeze_enabled()) {
+			_read_mover(i, false);
+		}
+		_merge_union(i);
+	}
+	for (const uint64_t id : freed) {
+		_on_mover_exiting(id);
+	}
+}
+
+bool StairsWalkGrid::mover_near(double p_min_x, double p_min_z, double p_max_x, double p_max_z, double p_bottom, double p_top, uint32_t p_mask) {
+	// Out of the tree, the snapshot stops, so every move near where bodies were
+	// could meet one that has since moved.
+	if (!_watching) {
+		return true;
+	}
+	if (!_mover_pending.empty()) {
+		_read_pending();
+	}
+	if (_union_min_x > p_max_x || _union_max_x < p_min_x || _union_min_z > p_max_z || _union_max_z < p_min_z ||
+			_union_min_y >= p_top || _union_max_y <= p_bottom) {
+		return false;
+	}
+	const uint32_t count = (uint32_t)_mover_sources.size();
+	const float min_x = (float)p_min_x;
+	const float min_z = (float)p_min_z;
+	const float max_x = (float)p_max_x;
+	const float max_z = (float)p_max_z;
+	const float bottom = (float)p_bottom;
+	const float top = (float)p_top;
+	bool near = false;
+	for (uint32_t i = 0; i < count; i++) {
+		near |= (_mover_layer[i] & p_mask) != 0 && _mover_min_x[i] <= max_x && _mover_max_x[i] >= min_x &&
+				_mover_min_z[i] <= max_z && _mover_max_z[i] >= min_z && _mover_min_y[i] < top && _mover_max_y[i] > bottom;
+	}
+	return near;
 }
 
 void StairsWalkGrid::_mark_stale(const char *p_why) {
@@ -149,10 +440,18 @@ void StairsWalkGrid::set_collision_mask(uint32_t p_value) {
 
 void StairsWalkGrid::_notification(int p_what) {
 	const Callable watch = callable_mp(this, &StairsWalkGrid::_on_node_added);
+	const Callable frame = callable_mp(this, &StairsWalkGrid::_on_physics_frame);
 	if (p_what == NOTIFICATION_ENTER_TREE) {
 		get_tree()->connect("node_added", watch);
+		get_tree()->connect("physics_frame", frame);
+		_watching = true;
+		if (_baked) {
+			_track_movers();
+		}
 	} else if (p_what == NOTIFICATION_EXIT_TREE) {
 		get_tree()->disconnect("node_added", watch);
+		get_tree()->disconnect("physics_frame", frame);
+		_watching = false;
 	}
 }
 
@@ -377,6 +676,7 @@ void StairsWalkGrid::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_stale"), &StairsWalkGrid::is_stale);
 	ClassDB::bind_method(D_METHOD("get_box_count"), &StairsWalkGrid::get_box_count);
 	ClassDB::bind_method(D_METHOD("get_unknown_count"), &StairsWalkGrid::get_unknown_count);
+	ClassDB::bind_method(D_METHOD("get_mover_count"), &StairsWalkGrid::get_mover_count);
 	ClassDB::bind_method(D_METHOD("set_collision_mask", "value"), &StairsWalkGrid::set_collision_mask);
 	ClassDB::bind_method(D_METHOD("get_collision_mask"), &StairsWalkGrid::get_collision_mask);
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "collision_mask", PROPERTY_HINT_LAYERS_3D_PHYSICS), "set_collision_mask", "get_collision_mask");

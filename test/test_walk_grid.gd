@@ -30,9 +30,16 @@ const TOLERANCE: float = 0.006
 const CONVEYOR_SPEED: float = 1.0
 ## StairsBody.min_step_forward's default.
 const MIN_STEP_FORWARD: float = 0.02
+## Seconds before _close_door's door starts to close: it crosses the path as the
+## body, walking from x = -2 at 3 m/s, comes within reach of it.
+const DOOR_WAIT: float = 0.45
 
 var _passed: int = 0
 var _failed: int = 0
+# Whether the box _carry_box froze was asleep when frozen, for w29.
+var _carried_asleep: bool = false
+# Bodies the grid still tracked a few frames after w32's free, or -1 before.
+var _movers_left: int = -1
 
 
 func _ready() -> void:
@@ -63,6 +70,16 @@ func _run_all() -> void:
 	_case_w20_the_grid_says_when_the_level_has_changed()
 	await _case_w21_intent_alone_climbs_a_step_on_the_grid()
 	await _case_w22_intent_alone_into_a_wall_holds_the_body_on_it()
+	await _case_w23_a_moving_body_in_the_path_is_swept_against()
+	await _case_w24_a_moving_body_added_after_the_bake_is_seen()
+	await _case_w25_a_moving_body_off_the_mask_is_walked_past()
+	await _case_w26_a_moving_body_freed_no_longer_counts()
+	await _case_w27_a_door_sliding_across_the_path_stops_the_walk()
+	await _case_w28_a_sleeping_loose_box_in_the_path_still_stops_the_walk()
+	await _case_w29_a_sleeping_box_frozen_and_carried_into_the_path_stops_the_walk()
+	await _case_w30_a_body_placed_after_it_is_added_is_seen_where_it_was_placed()
+	await _case_w31_a_body_under_the_walker_is_not_in_its_way()
+	await _case_w32_a_body_freed_without_an_exit_signal_no_longer_counts()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -784,6 +801,333 @@ func _case_w22_intent_alone_into_a_wall_holds_the_body_on_it() -> void:
 		"w22 intent alone into a wall holds the body on it",
 		_same(grid, swept) and grid.ups == 0 and swept.ups == 0 and grid.grid_ticks == TICKS,
 		_describe(grid, swept),
+	)
+
+
+## A frozen RigidBody3D wall, 0.4 m thick, across the path at x = 1, on `layer`.
+## Frozen, it holds still, but it is still a body that may move, which the grid
+## does not bake.
+func _add_mover_wall(world: Node3D, layer: int = 1) -> RigidBody3D:
+	var body: RigidBody3D = RigidBody3D.new()
+	body.freeze = true
+	body.collision_layer = layer
+	var shape_node: CollisionShape3D = CollisionShape3D.new()
+	var box: BoxShape3D = BoxShape3D.new()
+	box.size = Vector3(0.4, 2.0, 8.0)
+	shape_node.shape = box
+	body.add_child(shape_node)
+	world.add_child(body)
+	body.global_position = Vector3(1.0, 1.0, 0.0)
+	return body
+
+
+func _mover_world() -> Node3D:
+	var world: Node3D = _flat_world()
+	_add_mover_wall(world)
+	return world
+
+
+## Bakes any grid in `world`, since a body at rest has not yet.
+func _bake_grids(world: Node3D) -> void:
+	for child: Node in world.get_children():
+		var grid: StairsWalkGrid = child as StairsWalkGrid
+		if grid != null:
+			grid.bake()
+
+
+## A body that may move stands in the path: the grid walk sweeps near it, and
+## stops at it as the sweeps do, rather than walking through a body it never baked.
+func _case_w23_a_moving_body_in_the_path_is_swept_against() -> void:
+	const TICKS: int = 60
+	var start: Vector3 = Vector3(-2.0, REST_Y, 0.0)
+	var walk: Vector3 = Vector3(3.0, 0.0, 0.0)
+	var grid: Run = await _run(_mover_world, start, walk, TICKS, true)
+	var swept: Run = await _run(_mover_world, start, walk, TICKS, false)
+	_check(
+		"w23 a moving body in the path is swept against",
+		_same(grid, swept) and grid.on_wall and not grid.last_on_grid and grid.grid_ticks > 0,
+		_describe(grid, swept),
+	)
+
+
+## Bakes, then adds the moving wall: the grid picks it up as it enters the tree.
+func _add_mover_after_bake(world: Node3D) -> void:
+	_bake_grids(world)
+	_add_mover_wall(world)
+
+
+func _case_w24_a_moving_body_added_after_the_bake_is_seen() -> void:
+	const TICKS: int = 60
+	var start: Vector3 = Vector3(-2.0, REST_Y, 0.0)
+	var walk: Vector3 = Vector3(3.0, 0.0, 0.0)
+	var grid: Run = await _run(_flat_world, start, walk, TICKS, true, 1, 1, _add_mover_after_bake)
+	var swept: Run = await _run(_flat_world, start, walk, TICKS, false, 1, 1, _add_mover_after_bake)
+	_check(
+		"w24 a moving body added after the bake is seen",
+		_same(grid, swept) and grid.on_wall and not grid.last_on_grid and grid.grid_ticks > 0,
+		_describe(grid, swept),
+	)
+
+
+func _off_mask_mover_world() -> Node3D:
+	var world: Node3D = _flat_world()
+	_add_mover_wall(world, 2)
+	return world
+
+
+## A moving body on a layer the walker does not collide with changes nothing: the
+## grid walk passes it on the grid, as the sweeps pass through it.
+func _case_w25_a_moving_body_off_the_mask_is_walked_past() -> void:
+	const TICKS: int = 60
+	var start: Vector3 = Vector3(-2.0, REST_Y, 0.0)
+	var walk: Vector3 = Vector3(3.0, 0.0, 0.0)
+	var grid: Run = await _run(_off_mask_mover_world, start, walk, TICKS, true)
+	var swept: Run = await _run(_off_mask_mover_world, start, walk, TICKS, false)
+	_check(
+		"w25 a moving body off the mask is walked past",
+		_same(grid, swept) and grid.position.x > 0.9 and grid.grid_ticks == TICKS,
+		_describe(grid, swept),
+	)
+
+
+## Bakes, then frees the moving wall `_mover_world` adds.
+func _free_mover(world: Node3D) -> void:
+	_bake_grids(world)
+	var mover: RigidBody3D = null
+	for child: Node in world.get_children():
+		if child is RigidBody3D:
+			mover = child as RigidBody3D
+	if mover == null:
+		push_error("_free_mover: the world has no moving wall")
+		return
+	mover.free()
+
+
+## A moving body freed stops counting at once: the walk stays on the grid.
+func _case_w26_a_moving_body_freed_no_longer_counts() -> void:
+	const TICKS: int = 60
+	var start: Vector3 = Vector3(-2.0, REST_Y, 0.0)
+	var walk: Vector3 = Vector3(3.0, 0.0, 0.0)
+	var grid: Run = await _run(_mover_world, start, walk, TICKS, true, 1, 1, _free_mover)
+	var swept: Run = await _run(_mover_world, start, walk, TICKS, false, 1, 1, _free_mover)
+	_check(
+		"w26 a moving body freed no longer counts",
+		_same(grid, swept) and grid.position.x > 0.9 and grid.grid_ticks == TICKS,
+		_describe(grid, swept),
+	)
+
+
+## Bakes, then adds an AnimatableBody3D wall 4 m to the side of the path at x = 1
+## and, after DOOR_WAIT, slides it across over a third of a second, as a door
+## closing just as the body reaches it.
+func _close_door(world: Node3D) -> void:
+	_bake_grids(world)
+	var door: AnimatableBody3D = AnimatableBody3D.new()
+	var shape_node: CollisionShape3D = CollisionShape3D.new()
+	var box: BoxShape3D = BoxShape3D.new()
+	box.size = Vector3(0.4, 2.0, 3.0)
+	shape_node.shape = box
+	door.add_child(shape_node)
+	world.add_child(door)
+	door.global_position = Vector3(1.0, 1.0, 4.0)
+	var tween: Tween = world.create_tween()
+	tween.set_process_mode(Tween.TWEEN_PROCESS_PHYSICS)
+	tween.tween_interval(DOOR_WAIT)
+	tween.tween_property(door, ^"position:z", 0.0, 0.33)
+
+
+## A door slides shut across the path while the body walks at it: the grid walk
+## sees it as it comes and stops at it where the sweeps do.
+func _case_w27_a_door_sliding_across_the_path_stops_the_walk() -> void:
+	const TICKS: int = 60
+	var start: Vector3 = Vector3(-2.0, REST_Y, 0.0)
+	var walk: Vector3 = Vector3(3.0, 0.0, 0.0)
+	var grid: Run = await _run(_flat_world, start, walk, TICKS, true, 1, 1, _close_door)
+	var swept: Run = await _run(_flat_world, start, walk, TICKS, false, 1, 1, _close_door)
+	_check(
+		"w27 a door sliding across the path stops the walk",
+		_same(grid, swept) and grid.on_wall and grid.position.x < 0.6 and grid.grid_ticks > 0,
+		_describe(grid, swept),
+	)
+
+
+## A loose RigidBody3D box, 0.6 m, dropped just above the floor in the path at
+## x = 1, so it lands and falls asleep before the body reaches it.
+func _loose_box_world() -> Node3D:
+	var world: Node3D = _flat_world()
+	var box_body: RigidBody3D = RigidBody3D.new()
+	var shape_node: CollisionShape3D = CollisionShape3D.new()
+	var box: BoxShape3D = BoxShape3D.new()
+	box.size = Vector3(0.6, 0.6, 0.6)
+	shape_node.shape = box
+	box_body.add_child(shape_node)
+	world.add_child(box_body)
+	box_body.global_position = Vector3(1.0, 0.31, 0.0)
+	return world
+
+
+## A sleeping body is not read each frame, but it still counts where it lies: the
+## walk stops at it as the sweeps do.
+func _case_w28_a_sleeping_loose_box_in_the_path_still_stops_the_walk() -> void:
+	const TICKS: int = 90
+	var start: Vector3 = Vector3(-3.0, REST_Y, 0.0)
+	var walk: Vector3 = Vector3(3.0, 0.0, 0.0)
+	var grid: Run = await _run(_loose_box_world, start, walk, TICKS, true)
+	var swept: Run = await _run(_loose_box_world, start, walk, TICKS, false)
+	_check(
+		"w28 a sleeping loose box in the path still stops the walk",
+		_same(grid, swept) and grid.on_wall and grid.position.x < 0.45 and grid.grid_ticks > 0,
+		_describe(grid, swept),
+	)
+
+
+## Bakes, then waits for the loose box 3 m to the side of the path to fall asleep,
+## freezes it static, and carries it across the path by its position, as a held
+## prop is carried. A static-frozen body moved this way stays asleep under both
+## engines.
+func _carry_box(world: Node3D) -> void:
+	_bake_grids(world)
+	var box_body: RigidBody3D = null
+	for child: Node in world.get_children():
+		if child is RigidBody3D:
+			box_body = child as RigidBody3D
+	if box_body == null:
+		push_error("_carry_box: the world has no loose box")
+		return
+	box_body.global_position = Vector3(1.0, 0.31, 3.0)
+	var tween: Tween = world.create_tween()
+	tween.set_process_mode(Tween.TWEEN_PROCESS_PHYSICS)
+	tween.tween_interval(0.8)
+	tween.tween_callback(
+		func() -> void:
+			_carried_asleep = box_body.sleeping
+			box_body.freeze_mode = RigidBody3D.FREEZE_MODE_STATIC
+			box_body.freeze = true,
+	)
+	tween.tween_property(box_body, ^"position:z", 0.0, 0.3)
+
+
+## A frozen body carried while it sleeps is still read each frame: the walk stops
+## at the box where it was carried to, as the sweeps do.
+func _case_w29_a_sleeping_box_frozen_and_carried_into_the_path_stops_the_walk() -> void:
+	const TICKS: int = 150
+	var start: Vector3 = Vector3(-5.0, REST_Y, 0.0)
+	var walk: Vector3 = Vector3(3.0, 0.0, 0.0)
+	_carried_asleep = false
+	var grid: Run = await _run(_loose_box_world, start, walk, TICKS, true, 1, 1, _carry_box)
+	var asleep: bool = _carried_asleep
+	var swept: Run = await _run(_loose_box_world, start, walk, TICKS, false, 1, 1, _carry_box)
+	_check(
+		"w29 a sleeping box frozen and carried into the path stops the walk",
+		asleep and _same(grid, swept) and grid.on_wall
+		and grid.position.x < 0.45 and grid.grid_ticks > 0,
+		"asleep when frozen %s; %s" % [asleep, _describe(grid, swept)],
+	)
+
+
+## Bakes, then adds the moving wall and only then places it 9 m ahead, as a
+## spawner does.
+func _place_mover_far(world: Node3D) -> void:
+	_bake_grids(world)
+	var wall: RigidBody3D = _add_mover_wall(world)
+	wall.global_position = Vector3(9.0, 1.0, 0.0)
+
+
+## A body is read where it was placed, not where it was added, and not grown by
+## the distance between, which would reach back past the origin: the walk from
+## beside the origin, away from it, stays on the grid throughout.
+func _case_w30_a_body_placed_after_it_is_added_is_seen_where_it_was_placed() -> void:
+	const TICKS: int = 60
+	var start: Vector3 = Vector3(0.5, REST_Y, 0.0)
+	var walk: Vector3 = Vector3(-3.0, 0.0, 0.0)
+	var grid: Run = await _run(_flat_world, start, walk, TICKS, true, 1, 1, _place_mover_far)
+	var swept: Run = await _run(_flat_world, start, walk, TICKS, false, 1, 1, _place_mover_far)
+	_check(
+		"w30 a body placed after it is added is seen where it was placed",
+		_same(grid, swept) and grid.grid_ticks == TICKS,
+		_describe(grid, swept),
+	)
+
+
+## Bakes, then gives the walker a frozen box of its own, as a held item, on the
+## layer it collides with but excepted from its collisions.
+func _hold_box(world: Node3D) -> void:
+	_bake_grids(world)
+	var walker: StairsBody = null
+	for child: Node in world.get_children():
+		if child is StairsBody:
+			walker = child as StairsBody
+	if walker == null:
+		push_error("_hold_box: the world has no walker")
+		return
+	var held: RigidBody3D = RigidBody3D.new()
+	held.freeze = true
+	var shape_node: CollisionShape3D = CollisionShape3D.new()
+	var box: BoxShape3D = BoxShape3D.new()
+	box.size = Vector3(0.2, 0.2, 0.2)
+	shape_node.shape = box
+	held.add_child(shape_node)
+	walker.add_child(held)
+	held.position = Vector3(0.0, 0.2, -0.4)
+	held.add_collision_exception_with(walker)
+	walker.add_collision_exception_with(held)
+
+
+## A body under the walker moves with it, so it does not take the walker off the
+## grid.
+func _case_w31_a_body_under_the_walker_is_not_in_its_way() -> void:
+	const TICKS: int = 60
+	var start: Vector3 = Vector3(-3.0, REST_Y, 0.0)
+	var walk: Vector3 = Vector3(3.0, 0.0, 0.0)
+	var grid: Run = await _run(_flat_world, start, walk, TICKS, true, 1, 1, _hold_box)
+	_check(
+		"w31 a body under the walker is not in its way",
+		grid.grid_ticks == TICKS and grid.position.x > -0.1,
+		"grid %s on grid %d/%d" % [grid.position, grid.grid_ticks, TICKS],
+	)
+
+
+## Bakes, then frees the moving wall `_mover_world` adds with its signals blocked,
+## so it leaves without an exit signal, and a few frames on records how many
+## bodies each grid still tracks in `_movers_left`.
+func _free_mover_silently(world: Node3D) -> void:
+	_bake_grids(world)
+	_movers_left = -1
+	var mover: RigidBody3D = null
+	for child: Node in world.get_children():
+		if child is RigidBody3D:
+			mover = child as RigidBody3D
+	if mover == null:
+		push_error("_free_mover_silently: the world has no moving wall")
+		return
+	mover.set_block_signals(true)
+	mover.free()
+	var tween: Tween = world.create_tween()
+	tween.set_process_mode(Tween.TWEEN_PROCESS_PHYSICS)
+	tween.tween_interval(0.1)
+	tween.tween_callback(
+		func() -> void:
+			_movers_left = 0
+			for child: Node in world.get_children():
+				var grid: StairsWalkGrid = child as StairsWalkGrid
+				if grid != null:
+					_movers_left += grid.get_mover_count(),
+	)
+
+
+## A tracked body freed without an exit signal is found gone, and dropped: the
+## walk stays on the grid, as it does for one freed the usual way.
+func _case_w32_a_body_freed_without_an_exit_signal_no_longer_counts() -> void:
+	const TICKS: int = 60
+	var start: Vector3 = Vector3(-2.0, REST_Y, 0.0)
+	var walk: Vector3 = Vector3(3.0, 0.0, 0.0)
+	var grid: Run = await _run(_mover_world, start, walk, TICKS, true, 1, 1, _free_mover_silently)
+	var left: int = _movers_left
+	var swept: Run = await _run(_mover_world, start, walk, TICKS, false, 1, 1, _free_mover_silently)
+	_check(
+		"w32 a body freed without an exit signal no longer counts",
+		left == 0 and _same(grid, swept) and grid.position.x > 0.9 and grid.grid_ticks == TICKS,
+		"tracked after the free %d; %s" % [left, _describe(grid, swept)],
 	)
 
 
