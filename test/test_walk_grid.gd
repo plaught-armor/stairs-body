@@ -61,6 +61,8 @@ func _run_all() -> void:
 	await _case_w18_a_level_too_large_to_index_is_swept()
 	await _case_w19_a_wall_freed_after_the_bake_no_longer_blocks()
 	_case_w20_the_grid_says_when_the_level_has_changed()
+	await _case_w21_intent_alone_climbs_a_step_on_the_grid()
+	await _case_w22_intent_alone_into_a_wall_holds_the_body_on_it()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -133,7 +135,8 @@ func _flight_world() -> Node3D:
 
 ## Settles a body at `start` in the world `build` makes, then walks it at `walk`
 ## for `ticks`, moving it every `every` frames at that time scale, colliding with
-## `mask`. `settled` is called with the world between the two.
+## `mask`, with `intent` as desired_velocity. `settled` is called with the world
+## between the two.
 func _run(
 	build: Callable,
 	start: Vector3,
@@ -143,6 +146,7 @@ func _run(
 	every: int = 1,
 	mask: int = 1,
 	settled: Callable = Callable(),
+	intent: Vector3 = Vector3.ZERO,
 ) -> Run:
 	var world: Node3D = build.call()
 	var c: StairsBody = _add_body(world, start)
@@ -168,6 +172,7 @@ func _run(
 		if i % every != 0:
 			continue
 		c.velocity = Vector3(walk.x, c.velocity.y - GRAVITY * DELTA * every, walk.z)
+		c.desired_velocity = intent
 		c.move_and_stair_step(float(every))
 		run.grid_ticks += 1 if c.is_on_walk_grid() else 0
 	run.position = c.global_position
@@ -722,6 +727,63 @@ func _case_w20_the_grid_says_when_the_level_has_changed() -> void:
 			+ " moved %s, masked %s"
 		)
 		% [fresh, added, rebaked, watches, moved, masked],
+	)
+
+
+## A body standing still 15 mm short of the flight's first riser, with
+## desired_velocity pointing up the flight and no velocity, as a controller whose
+## velocity was clipped to zero against the face leaves it. Intent carries 10 mm a
+## frame, short of the riser, so the step is found only by reaching
+## min_step_forward. The sweeps step it onto the first tread; the grid walk has to
+## as well.
+func _case_w21_intent_alone_climbs_a_step_on_the_grid() -> void:
+	const TICKS: int = 30
+	var start: Vector3 = Vector3(-BODY_RADIUS - 0.015, REST_Y, 0.0)
+	var intent: Vector3 = Vector3(0.6, 0.0, 0.0)
+	var grid: Run = await _run(
+		_flight_world,
+		start,
+		Vector3.ZERO,
+		TICKS,
+		true,
+		1,
+		1,
+		Callable(),
+		intent,
+	)
+	var swept: Run = await _run(
+		_flight_world,
+		start,
+		Vector3.ZERO,
+		TICKS,
+		false,
+		1,
+		1,
+		Callable(),
+		intent,
+	)
+	_check(
+		"w21 intent alone climbs a step on the grid",
+		_same(grid, swept, MIN_STEP_FORWARD) and grid.ups == 1
+		and swept.ups == 1 and grid.grid_ticks == TICKS,
+		_describe(grid, swept),
+	)
+
+
+## A body standing still a centimetre short of a wall too tall to step, with
+## desired_velocity pointing into it: the sweeps leave it where it is, held on the
+## wall, and so does the grid walk, climbing nothing.
+func _case_w22_intent_alone_into_a_wall_holds_the_body_on_it() -> void:
+	const TICKS: int = 30
+	var start: Vector3 = Vector3(0.8 - BODY_RADIUS - 0.01, REST_Y, 0.0)
+	var intent: Vector3 = Vector3(1.5, 0.0, 0.0)
+	var build: Callable = _walled_world.bind(0.0)
+	var grid: Run = await _run(build, start, Vector3.ZERO, TICKS, true, 1, 1, Callable(), intent)
+	var swept: Run = await _run(build, start, Vector3.ZERO, TICKS, false, 1, 1, Callable(), intent)
+	_check(
+		"w22 intent alone into a wall holds the body on it",
+		_same(grid, swept) and grid.ups == 0 and swept.ups == 0 and grid.grid_ticks == TICKS,
+		_describe(grid, swept),
 	)
 
 

@@ -108,7 +108,8 @@ StairsWalkGrid *StairsBody::get_walk_grid() const {
 // when they must. Taken only on the floor, on a baked box, not rising, with no
 // moving floor, where the grid answers for everything the move can reach, and
 // only if the body's feet are within WALK_ENTRY of the grid's floor; otherwise the
-// move sweeps. A move the grid cannot finish - a drop past the step-down reach,
+// move sweeps. A body with no motion of its own climbs a step its intent meets, as
+// the sweeps' step probe lets it. A move the grid cannot finish - a drop past the step-down reach,
 // a ceiling met stepping up, the body already inside a box - is undone and swept.
 // Returns whether the move was made.
 bool StairsBody::_walk_on_grid(double p_delta) {
@@ -133,9 +134,10 @@ bool StairsBody::_walk_on_grid(double p_delta) {
 	const Vector3 saved_pending = _crowd_pending;
 	_contacts.clear();
 	const Vector3 motion = _crowd_solve(velocity * HORIZONTAL_MASK * p_delta) * HORIZONTAL_MASK;
+	const Vector3 probe = _grid_intent_probe(motion, p_delta);
 	const double pad = foot.axis.length() + foot.radius + safe_margin * 4.0;
 	const Vector3 from = foot.centre;
-	const Vector3 to = foot.centre + motion;
+	const Vector3 to = foot.centre + motion + probe;
 	const double min_x = MIN(from.x, to.x) - pad;
 	const double min_z = MIN(from.z, to.z) - pad;
 	const double max_x = MAX(from.x, to.x) + pad;
@@ -149,7 +151,7 @@ bool StairsBody::_walk_on_grid(double p_delta) {
 	bool hit = false;
 	const bool walked = !grid->unanswered(min_x, min_z, max_x, max_z, foot.bottom - _step_down_reach() - WALK_ENTRY, foot.top + step_height, get_collision_mask()) &&
 			_grid_floor(*grid, foot, Vector3(), floor, floor_box) && std::abs(foot.bottom - floor) <= WALK_ENTRY &&
-			_grid_sweep(*grid, foot, motion, shift, hit) &&
+			(probe == Vector3() ? _grid_sweep(*grid, foot, motion, shift, hit) : _grid_intent_step(*grid, foot, probe, floor, shift, hit)) &&
 			_grid_floor(*grid, foot, shift, floor, floor_box) && foot.bottom - floor <= _step_down_reach() + GRID_SLACK;
 	Vector3 normal;
 	Vector3 point;
@@ -160,7 +162,41 @@ bool StairsBody::_walk_on_grid(double p_delta) {
 		_contacts.clear();
 		return false;
 	}
-	_grid_commit(*grid, foot, shift, floor, floor_box, hit);
+	// Held by intent against a wall it cannot step: on the wall wherever the probe
+	// met it, as _intent_step holds the sweeps.
+	const bool held = probe != Vector3() && shift == Vector3() && hit;
+	_grid_commit(*grid, foot, shift, floor, floor_box, hit, held ? probe.length() : 0.0);
+	return true;
+}
+
+// Where a body with no motion of its own this frame looks for a step: along
+// desired_velocity, at least min_step_forward, as _step_probe reaches for the
+// sweeps. Zero when the body has any motion, a crowd push included, or no
+// intent: motion climbs a step on the grid by itself once it carries the
+// footprint onto it, where the sweeps' probe reaches the face up to
+// min_step_forward sooner.
+Vector3 StairsBody::_grid_intent_probe(const Vector3 &p_motion, double p_delta) const {
+	const Vector3 intent = desired_velocity * HORIZONTAL_MASK * p_delta;
+	if (p_motion != Vector3() || intent == Vector3()) {
+		return Vector3();
+	}
+	return intent.normalized() * MAX((double)intent.length(), min_step_forward);
+}
+
+// The grid walk's _intent_step: slides the footprint along `probe`, and keeps the
+// move only if the floor there is higher than `p_floor`, the floor the body
+// stands on. Otherwise the body stays where it is, and `r_hit` still says whether
+// the probe met a wall, as a body held against a face is on it with the sweeps.
+// Returns false when the body starts inside a box.
+bool StairsBody::_grid_intent_step(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_probe, double p_floor, Vector3 &r_shift, bool &r_hit) {
+	if (!_grid_sweep(p_grid, p_foot, p_probe, r_shift, r_hit)) {
+		return false;
+	}
+	double floor = 0.0;
+	uint32_t box = 0;
+	if (!_grid_floor(p_grid, p_foot, r_shift, floor, box) || floor <= p_floor + GRID_SLACK) {
+		r_shift = Vector3();
+	}
 	return true;
 }
 
@@ -275,9 +311,10 @@ double StairsBody::_grid_nearest(const StairsWalkGrid &p_grid, const Neighbour &
 // Puts the body where the grid walk left it and records what it touched, as the
 // sweeps would: the floor box, and when the walk ran into a box standing higher
 // than a step, the nearest such box as a wall. A body left standing by a wall
-// does not touch it, as with the sweeps, which leave it a margin or more away. A
+// does not touch it, as with the sweeps, which leave it a margin or more away,
+// unless intent holds it there: then a wall within `held_reach` is touched. A
 // step up or down past STEP_DOWN_SIGNAL_MIN is announced.
-void StairsBody::_grid_commit(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double p_floor, uint32_t p_floor_box, bool p_hit) {
+void StairsBody::_grid_commit(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double p_floor, uint32_t p_floor_box, bool p_hit, double p_held_reach) {
 	Transform3D xform = get_global_transform();
 	xform.origin += p_shift;
 	xform.origin.y += p_floor - p_foot.bottom;
@@ -299,7 +336,7 @@ void StairsBody::_grid_commit(const StairsWalkGrid &p_grid, const Neighbour &p_f
 	Vector3 point;
 	uint32_t wall_box = UINT32_MAX;
 	const double gap = _grid_nearest(p_grid, p_foot, p_shift, p_foot.bottom + step_height + GRID_SLACK, p_foot.top, wall, wall_box, point);
-	if (p_hit && gap <= safe_margin * 2.0 && wall != Vector3()) {
+	if (p_hit && gap <= MAX(safe_margin * 2.0, p_held_reach) && wall != Vector3()) {
 		_on_wall = true;
 		_wall_normal = wall;
 		Contact wall_contact;

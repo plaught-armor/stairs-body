@@ -254,9 +254,11 @@ private:
 	void _clear_contacts();
 	bool _walk_on_grid(double p_delta);
 	bool _grid_sweep(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_motion, Vector3 &r_shift, bool &r_hit);
+	Vector3 _grid_intent_probe(const Vector3 &p_motion, double p_delta) const;
+	bool _grid_intent_step(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_probe, double p_floor, Vector3 &r_shift, bool &r_hit);
 	bool _grid_floor(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double &r_floor, uint32_t &r_box) const;
 	double _grid_nearest(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double p_above, double p_below, Vector3 &r_normal, uint32_t &r_box, Vector3 &r_point) const;
-	void _grid_commit(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double p_floor, uint32_t p_floor_box, bool p_hit);
+	void _grid_commit(const StairsWalkGrid &p_grid, const Neighbour &p_foot, const Vector3 &p_shift, double p_floor, uint32_t p_floor_box, bool p_hit, double p_held_reach);
 	void _measure_footprint();
 	static void _crowd_frame();
 	static double _foot_gap(const Neighbour &p_a, const Vector3 &p_a_shift, const Neighbour &p_b, const Vector3 &p_b_shift, Vector3 &r_normal);

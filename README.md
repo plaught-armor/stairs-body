@@ -12,7 +12,7 @@ It does not track upstream and does not send changes back. The four-phase steppi
 algorithm (up, forward, down, commit) is Andrea Jörgensen's, and `StairsBody`
 still follows it.
 
-The test suites run headless under **both** Godot Physics and Jolt, 100 checks,
+The test suites run headless under **both** Godot Physics and Jolt, 102 checks,
 green on each.
 
 ## Why a move loop of its own
@@ -549,11 +549,11 @@ bodies, so call it after editing the level rather than every frame.
 
 Other differences from the sweeps:
 
-- `desired_velocity` alone does not climb a step on the grid; velocity does.
 - The footprint is the crowd footprint, a capsule lying flat. A box-shaped body's
   corners stick out of it and can overlap a wall slightly on the grid.
 - A step up under Godot Physics carries a body up to `min_step_forward` past where
-  its velocity takes it; on the grid a body moves by its velocity alone.
+  its velocity takes it; on the grid a moving body goes only as far as its
+  velocity takes it.
 - Main thread only, as crowd separation is.
 
 ## Physics engines
@@ -593,7 +593,7 @@ Runs three headless suites and exits with the total number of failures:
 - `test/test_stairs_body.gd`, 37 checks for machinery the first suite does not
   reach: the tunnel guard, the refusal cache, the loose-step rule, the Jolt edge
   handling, `step_ignore_layers`, the contact list and crowd separation.
-- `test/test_walk_grid.gd`, 20 checks that run each scenario on a walk grid and by
+- `test/test_walk_grid.gd`, 22 checks that run each scenario on a walk grid and by
   sweeps, and compare where the two end.
 
 Each builds its worlds procedurally. Build the extension with `scons` first;
