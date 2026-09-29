@@ -59,6 +59,8 @@ func _run_all() -> void:
 	await _case_w16_a_resting_body_keeps_its_contacts()
 	await _case_w17_a_body_standing_at_a_wall_is_on_it()
 	await _case_w18_a_level_too_large_to_index_is_swept()
+	await _case_w19_a_wall_freed_after_the_bake_no_longer_blocks()
+	_case_w20_the_grid_says_when_the_level_has_changed()
 	print("--- %d passed, %d failed ---" % [_passed, _failed])
 	get_tree().quit(_failed)
 
@@ -131,7 +133,7 @@ func _flight_world() -> Node3D:
 
 ## Settles a body at `start` in the world `build` makes, then walks it at `walk`
 ## for `ticks`, moving it every `every` frames at that time scale, colliding with
-## `mask`.
+## `mask`. `settled` is called with the world between the two.
 func _run(
 	build: Callable,
 	start: Vector3,
@@ -140,6 +142,7 @@ func _run(
 	on_grid: bool,
 	every: int = 1,
 	mask: int = 1,
+	settled: Callable = Callable(),
 ) -> Run:
 	var world: Node3D = build.call()
 	var c: StairsBody = _add_body(world, start)
@@ -158,6 +161,8 @@ func _run(
 		await get_tree().physics_frame
 		c.velocity.y -= GRAVITY * DELTA
 		c.move_and_stair_step()
+	if settled.is_valid():
+		settled.call(world)
 	for i: int in ticks:
 		await get_tree().physics_frame
 		if i % every != 0:
@@ -654,6 +659,69 @@ func _case_w18_a_level_too_large_to_index_is_swept() -> void:
 		"w18 a level too large to index is swept",
 		_same(grid, swept) and grid.grid_ticks == 0,
 		_describe(grid, swept),
+	)
+
+
+## Bakes any grid in `world`, since a body at rest has not yet, then frees the
+## wall `_walled_world` adds, its second child.
+func _free_wall(world: Node3D) -> void:
+	for child: Node in world.get_children():
+		var grid: StairsWalkGrid = child as StairsWalkGrid
+		if grid != null:
+			grid.bake()
+	var wall: StaticBody3D = world.get_child(1) as StaticBody3D
+	if wall == null or not is_equal_approx(wall.position.x, 1.0):
+		push_error("_free_wall: the second child is not the wall")
+		return
+	wall.free()
+
+
+## A wall freed once the grid has baked leaves the index at once: the grid walk
+## passes where it stood, as the sweeps do, ending 3 m on at x = 1, past its
+## near face at 0.8.
+func _case_w19_a_wall_freed_after_the_bake_no_longer_blocks() -> void:
+	const TICKS: int = 60
+	var build: Callable = _walled_world.bind(0.0)
+	var start: Vector3 = Vector3(-2.0, REST_Y, 0.0)
+	var walk: Vector3 = Vector3(3.0, 0.0, 0.0)
+	var grid: Run = await _run(build, start, walk, TICKS, true, 1, 1, _free_wall)
+	var swept: Run = await _run(build, start, walk, TICKS, false, 1, 1, _free_wall)
+	_check(
+		"w19 a wall freed after the bake no longer blocks",
+		_same(grid, swept) and grid.position.x > 0.9 and grid.grid_ticks == TICKS,
+		_describe(grid, swept),
+	)
+
+
+## Adding a static body, moving a baked one and changing the mask each leave the
+## grid stale until it bakes again. Prints two expected warnings.
+func _case_w20_the_grid_says_when_the_level_has_changed() -> void:
+	var world: Node3D = _flat_world()
+	var grid: StairsWalkGrid = StairsWalkGrid.new()
+	world.add_child(grid)
+	grid.bake()
+	var fresh: bool = not grid.is_stale()
+	var box: StaticBody3D = _add_box(world, Vector3(1.0, 1.0, 1.0), Vector3(2.0, 0.5, 0.0))
+	var added: bool = grid.is_stale()
+	grid.bake()
+	var rebaked: bool = not grid.is_stale() and grid.get_box_count() == 2
+	grid.bake()
+	var watches: int = box.get_signal_connection_list(&"tree_exiting").size()
+	box.position.x += 0.5
+	var moved: bool = grid.is_stale()
+	grid.bake()
+	grid.collision_mask = 3
+	var masked: bool = grid.is_stale()
+	grid.free()
+	world.free()
+	_check(
+		"w20 the grid says when the level has changed",
+		fresh and added and rebaked and watches == 1 and moved and masked,
+		(
+			"fresh %s, added %s, rebaked %s, %d exit watches after two bakes expected 1,"
+			+ " moved %s, masked %s"
+		)
+		% [fresh, added, rebaked, watches, moved, masked],
 	)
 
 

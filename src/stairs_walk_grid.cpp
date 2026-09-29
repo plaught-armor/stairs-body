@@ -3,9 +3,13 @@
 
 #include <godot_cpp/classes/animatable_body3d.hpp>
 #include <godot_cpp/classes/box_shape3d.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
 #include <godot_cpp/classes/static_body3d.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/math.hpp>
+#include <godot_cpp/core/object.hpp>
+#include <godot_cpp/variant/callable_method_pointer.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/packed_int32_array.hpp>
 
 #include <cmath>
@@ -44,8 +48,9 @@ bool upright(const Basis &p_basis) {
 void StairsWalkGrid::bake() {
 	_boxes.clear();
 	_unknown.clear();
-	_colliders.clear();
+	_bodies.clear();
 	_baked = false;
+	_stale = false;
 	std::vector<Node *> stack;
 	stack.push_back(get_parent() != nullptr ? get_parent() : this);
 	for (int64_t visited = 0; !stack.empty(); visited++) {
@@ -61,6 +66,93 @@ void StairsWalkGrid::bake() {
 		}
 	}
 	_index();
+	_box_live = (uint32_t)_boxes.size();
+	// A watch left from an earlier bake is kept rather than doubled; one left on a
+	// body no longer baked finds nothing to drop. The engine disconnects them all
+	// when the grid is freed.
+	for (const auto &[id, baked] : _bodies) {
+		Object *body = ObjectDB::get_instance(id);
+		const Callable watch = callable_mp(this, &StairsWalkGrid::_on_body_exiting).bind(id);
+		if (body != nullptr && !body->is_connected("tree_exiting", watch)) {
+			body->connect("tree_exiting", watch, CONNECT_ONE_SHOT);
+		}
+	}
+}
+
+// A baked body left the tree, so it has left the physics space too: its boxes and
+// regions stop counting at once, by clearing their layers.
+void StairsWalkGrid::_on_body_exiting(uint64_t p_id) {
+	const auto it = _bodies.find(p_id);
+	if (it == _bodies.end()) {
+		return;
+	}
+	const Baked &baked = it->second;
+	for (uint32_t i = baked.box_first; i < baked.box_first + baked.box_count; i++) {
+		_boxes[i].layer = 0;
+	}
+	for (uint32_t i = baked.unknown_first; i < baked.unknown_first + baked.unknown_count; i++) {
+		_unknown[i].layer = 0;
+	}
+	_box_live -= baked.box_count;
+	_bodies.erase(it);
+}
+
+void StairsWalkGrid::_on_node_added(Node *p_node) {
+	if (!_baked || _stale || Object::cast_to<StaticBody3D>(p_node) == nullptr || Object::cast_to<AnimatableBody3D>(p_node) != nullptr) {
+		return;
+	}
+	const Node *root = get_parent() != nullptr ? get_parent() : this;
+	if (root->is_ancestor_of(p_node)) {
+		_mark_stale("a static body was added under it");
+	}
+}
+
+void StairsWalkGrid::_mark_stale(const char *p_why) {
+	if (_baked && !_stale) {
+		_stale = true;
+		UtilityFunctions::push_warning(vformat("StairsWalkGrid: %s; call bake() to include it.", p_why));
+	}
+}
+
+// Whether the level has changed since the bake in a way the index does not
+// follow. Checks every baked body's transform and layers, so it costs a pass over
+// them: call it after editing the level, not every frame.
+bool StairsWalkGrid::is_stale() const {
+	if (_stale) {
+		return true;
+	}
+	for (const auto &[id, baked] : _bodies) {
+		const StaticBody3D *body = Object::cast_to<StaticBody3D>(ObjectDB::get_instance(id));
+		if (body == nullptr || !body->is_inside_tree() || body->get_collision_layer() != baked.layer ||
+				!body->get_global_transform().is_equal_approx(baked.xform)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+int StairsWalkGrid::get_unknown_count() const {
+	int count = 0;
+	for (const Unknown &unknown : _unknown) {
+		count += unknown.layer != 0 ? 1 : 0;
+	}
+	return count;
+}
+
+void StairsWalkGrid::set_collision_mask(uint32_t p_value) {
+	if (p_value != collision_mask) {
+		collision_mask = p_value;
+		_mark_stale("collision_mask changed");
+	}
+}
+
+void StairsWalkGrid::_notification(int p_what) {
+	const Callable watch = callable_mp(this, &StairsWalkGrid::_on_node_added);
+	if (p_what == NOTIFICATION_ENTER_TREE) {
+		get_tree()->connect("node_added", watch);
+	} else if (p_what == NOTIFICATION_EXIT_TREE) {
+		get_tree()->disconnect("node_added", watch);
+	}
 }
 
 // A static body's boxes, when it is on the mask and carries nothing; everything
@@ -74,6 +166,12 @@ void StairsWalkGrid::_add_body(StaticBody3D *p_body) {
 	const bool carries = p_body->get_constant_linear_velocity() != Vector3() || p_body->get_constant_angular_velocity() != Vector3();
 	const bool baked = (layer & collision_mask) != 0 && !carries;
 	const Transform3D xform = p_body->get_global_transform();
+	Baked record;
+	record.box_first = (uint32_t)_boxes.size();
+	record.unknown_first = (uint32_t)_unknown.size();
+	record.xform = xform;
+	record.layer = layer;
+	record.walkable = baked;
 	const PackedInt32Array owners = p_body->get_shape_owners();
 	for (int64_t k = 0; k < owners.size(); k++) {
 		const uint32_t owner_id = owners[k];
@@ -109,9 +207,9 @@ void StairsWalkGrid::_add_body(StaticBody3D *p_body) {
 			_add_unknown(shape, at, layer);
 		}
 	}
-	if (baked) {
-		_colliders.insert(p_body->get_instance_id());
-	}
+	record.box_count = (uint32_t)_boxes.size() - record.box_first;
+	record.unknown_count = (uint32_t)_unknown.size() - record.unknown_first;
+	_bodies[p_body->get_instance_id()] = record;
 }
 
 // A shape's world bounds as a region the grid does not answer for; everywhere,
@@ -156,7 +254,7 @@ void StairsWalkGrid::_index() {
 	if (!(bins_x * bins_z <= BINS_MAX)) {
 		// Refused, not half built: nothing is baked, so bodies keep their sweeps.
 		_boxes.clear();
-		_colliders.clear();
+		_bodies.clear();
 		_bins_x = 0;
 		_bins_z = 0;
 		_baked = true;
@@ -275,6 +373,7 @@ double StairsWalkGrid::gap(const Box &p_box, const Vector3 &p_a, const Vector3 &
 void StairsWalkGrid::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("bake"), &StairsWalkGrid::bake);
 	ClassDB::bind_method(D_METHOD("is_baked"), &StairsWalkGrid::is_baked);
+	ClassDB::bind_method(D_METHOD("is_stale"), &StairsWalkGrid::is_stale);
 	ClassDB::bind_method(D_METHOD("get_box_count"), &StairsWalkGrid::get_box_count);
 	ClassDB::bind_method(D_METHOD("get_unknown_count"), &StairsWalkGrid::get_unknown_count);
 	ClassDB::bind_method(D_METHOD("set_collision_mask", "value"), &StairsWalkGrid::set_collision_mask);

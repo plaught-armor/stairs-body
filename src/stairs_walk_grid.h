@@ -10,6 +10,11 @@
 // kept as a region the grid does not answer for. Bodies that move
 // (AnimatableBody3D, RigidBody3D, CharacterBody3D) are not baked and are not seen
 // by a body walking on the grid. Main thread only.
+//
+// A baked body that leaves the tree is dropped from the index on the spot. A
+// static body added under the grid's parent, a change of collision_mask, and a
+// baked body moved or given other layers leave the index stale until bake() is
+// called again; is_stale() says so.
 
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/shape3d.hpp>
@@ -17,7 +22,7 @@
 #include <godot_cpp/variant/rid.hpp>
 #include <godot_cpp/variant/vector3.hpp>
 
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 namespace godot {
@@ -62,9 +67,23 @@ private:
 	static constexpr double BIN = 2.0;
 
 	bool _baked = false;
+	// What was baked of one static body: its boxes and regions, which _add_body
+	// appends contiguously, and what it was baked with.
+	struct Baked {
+		uint32_t box_first = 0;
+		uint32_t box_count = 0;
+		uint32_t unknown_first = 0;
+		uint32_t unknown_count = 0;
+		Transform3D xform;
+		uint32_t layer = 0;
+		bool walkable = false;
+	};
+
+	bool _stale = false;
 	std::vector<Box> _boxes;
 	std::vector<Unknown> _unknown;
-	std::unordered_set<uint64_t> _colliders;
+	std::unordered_map<uint64_t, Baked> _bodies;
+	uint32_t _box_live = 0;
 	double _min_x = 0.0;
 	double _min_z = 0.0;
 	int64_t _bins_x = 0;
@@ -80,15 +99,20 @@ private:
 	void _add_body(class StaticBody3D *p_body);
 	void _add_unknown(const Ref<Shape3D> &p_shape, const Transform3D &p_at, uint32_t p_layer);
 	void _index();
+	void _on_body_exiting(uint64_t p_id);
+	void _on_node_added(Node *p_node);
+	void _mark_stale(const char *p_why);
 
 protected:
 	static void _bind_methods();
+	void _notification(int p_what);
 
 public:
 	void bake();
 	bool is_baked() const { return _baked; }
-	int get_box_count() const { return (int)_boxes.size(); }
-	int get_unknown_count() const { return (int)_unknown.size(); }
+	bool is_stale() const;
+	int get_box_count() const { return (int)_box_live; }
+	int get_unknown_count() const;
 
 	const Box &box(uint32_t p_index) const { return _boxes[p_index]; }
 	// Appends the boxes that may overlap the given horizontal bounds.
@@ -97,14 +121,17 @@ public:
 	// the given bounds.
 	bool unanswered(double p_min_x, double p_min_z, double p_max_x, double p_max_z, double p_bottom, double p_top, uint32_t p_mask) const;
 	// Whether the collider with this instance id was baked.
-	bool bakes(uint64_t p_collider_id) const { return _colliders.count(p_collider_id) != 0; }
+	bool bakes(uint64_t p_collider_id) const {
+		const auto it = _bodies.find(p_collider_id);
+		return it != _bodies.end() && it->second.walkable;
+	}
 	// Horizontal gap between box `p_box` and the capsule from `p_a` to `p_b` of radius
 	// `p_radius`; negative or zero when they overlap. `r_normal` points from the box
 	// to the capsule, and `r_point` is the nearest point of the box, at y = 0; both
 	// are zero when the capsule's axis is inside the box.
 	static double gap(const Box &p_box, const Vector3 &p_a, const Vector3 &p_b, double p_radius, Vector3 &r_normal, Vector3 &r_point);
 
-	void set_collision_mask(uint32_t p_value) { collision_mask = p_value; }
+	void set_collision_mask(uint32_t p_value);
 	uint32_t get_collision_mask() const { return collision_mask; }
 };
 

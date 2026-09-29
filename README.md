@@ -455,6 +455,37 @@ func _physics_process(delta: float) -> void:
 `is_on_walk_grid()` says which way the last move went. Switching is free: set
 `walk_grid` at any time, including every frame.
 
+Distance to the player covers the player only. To keep bodies off the grid near
+anything else that moves (a door, a rolling prop, a platform), ask the physics
+space whether one is near. A shape query is a physics query, the cost the grid
+saves, so ask every few frames rather than every frame, and pad the radius by
+how far the body and the mover can close in that time:
+
+```gdscript
+const MOVERS: int = 1 << 3 # the layers of things that move; not the crowd's own
+const RECHECK: int = 10 # frames between checks
+
+var _near: PhysicsShapeQueryParameters3D = PhysicsShapeQueryParameters3D.new()
+var _mover_near: bool = false
+
+func _ready() -> void:
+    var sphere: SphereShape3D = SphereShape3D.new()
+    sphere.radius = 4.0
+    _near.shape = sphere
+    _near.collision_mask = MOVERS
+    _near.exclude = [get_rid()]
+
+func _physics_process(delta: float) -> void:
+    if (Engine.get_physics_frames() + get_instance_id()) % RECHECK == 0:
+        _near.transform = global_transform
+        _mover_near = not get_world_3d().direct_space_state.intersect_shape(_near, 1).is_empty()
+    walk_grid = null if _mover_near else _grid
+    velocity.y -= gravity * delta
+    move_and_stair_step()
+```
+
+Adding the instance id spreads the checks of a crowd over the frames.
+
 ### What a move on the grid does
 
 - It slides along boxes taller than `step_height`, stopping `safe_margin` short.
@@ -494,8 +525,16 @@ walkable parts from boxes to use it.
 A body on the grid does not see anything that moves: moving platforms, rigid
 bodies, a player, and other `StairsBody` nodes. Bodies on the grid keep apart from
 each other only by crowd separation, so give a crowd that walks on it
-`crowd_layers` (see [Crowds](#crowds)); without it they walk through each other. The grid does not follow changes to the level either; call
-`bake()` after adding, removing or moving static geometry.
+`crowd_layers` (see [Crowds](#crowds)); without it they walk through each other.
+
+The grid follows the level only part of the way. A baked body that leaves the
+tree, such as a wall freed or a crate removed, drops out of the index at once.
+Anything else leaves the index stale until `bake()` is called again: a static
+body added under the grid's parent, a baked body moved or given other layers,
+or a change to the grid's `collision_mask`. Until then the grid keeps answering
+from the old bake. Adding a static body and changing the mask each print a
+warning; `is_stale()` catches all of them, at the cost of a pass over the baked
+bodies, so call it after editing the level rather than every frame.
 
 Other differences from the sweeps:
 
