@@ -378,16 +378,21 @@ once from its shapes' bounds, and is kept apart in two ways:
   by more than the slop (below) is pushed back to touching, each taking half. A member
   takes its push as part of its own next move, so the push is swept against the
   world with the move and never shoves the member into a wall. A member not moved
-  that frame never takes it.
+  that frame keeps its push for its next move.
 - Each move's own motion is kept out of the neighbours, so a member walking into
   one stops at it, as a sweep would stop it.
+
+Neighbours are read from a snapshot taken at the start of the frame, which each
+member brings up to date as it moves, so no move asks the engine where its
+neighbours are. A member moved by other code during the frame, by setting its
+position, is seen where the frame began until the next frame.
 
 Neighbours touched are listed in the [contact list](#contacts), with the other
 member as collider and a horizontal normal pointing back at this body, and
 velocity is clipped against them.
 
-`test/bench_pile.gd -- --crowd`, 96 box-shaped bodies pressed into a pile, costs 13.7
-µs per body on Godot Physics and 9.8 on Jolt, against 47 and 32 with collision. Of
+`test/bench_pile.gd -- --crowd`, 96 box-shaped bodies pressed into a pile, costs 12.9
+µs per body on Godot Physics and 8.7 on Jolt, against 47 and 32 with collision. Of
 that, the separation itself is under 3 µs; the rest is the sweeps against the
 floor. The same bodies standing apart and still cost what they cost without it.
 
@@ -423,8 +428,8 @@ and makes its ordinary sweeps wherever the grid cannot answer.
 | pressed into a tall wall | 1.3 | 41 | 19 |
 | climbing a flight | 1.0 | 18.4 | 12.1 |
 
-In the pile of 96 (`bench_pile.gd -- --crowd --grid`) a body costs 4.6 µs, against
-13.4 and 9.8; nearly all of that is now crowd separation.
+In the pile of 96 (`bench_pile.gd -- --crowd --grid`) a body costs 4.1 µs, against
+12.9 and 8.7; the grid's own work is about 0.3 µs of that.
 
 ### Setting it up
 

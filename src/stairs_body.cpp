@@ -333,6 +333,23 @@ void StairsBody::_grid_commit(const StairsWalkGrid &p_grid, const Neighbour &p_f
 // than every frame: 2 moves it for two frames' worth of time, once.
 void StairsBody::move_and_stair_step(double p_time_scale) {
 	ERR_FAIL_COND_MSG(!(p_time_scale > 0.0), "time_scale must be positive.");
+	_move(p_time_scale);
+	_crowd_publish();
+}
+
+// Where this member now stands, plus any push it still owes, into this frame's
+// snapshot, which is where the members that move after it read it.
+void StairsBody::_crowd_publish() {
+	if (crowd_layers == 0 || _snap_index >= s_snap.size() || s_snap[_snap_index].body != this ||
+			g_crowd_frame != Engine::get_singleton()->get_physics_frames()) {
+		return;
+	}
+	Neighbour &foot = s_snap[_snap_index].foot;
+	foot = _foot_world(get_global_transform());
+	foot.centre += _crowd_pending;
+}
+
+void StairsBody::_move(double p_time_scale) {
 	_time_scale = p_time_scale;
 	const double delta = get_physics_process_delta_time() * p_time_scale;
 	const bool overlapping = _crowd_gather();
@@ -522,6 +539,7 @@ StairsBody::Neighbour StairsBody::_foot_world(const Transform3D &p_xform) const 
 	n.axis = (p_xform.basis.xform(_foot_axis) * HORIZONTAL_MASK).normalized() * _foot_half_length;
 	n.centre = p_xform.xform(_foot_centre) * HORIZONTAL_MASK;
 	n.radius = _foot_radius;
+	n.extent = _foot_half_length + _foot_radius;
 	n.bottom = p_xform.origin.y + _foot_bottom;
 	n.top = p_xform.origin.y + _foot_top;
 	return n;
@@ -548,6 +566,15 @@ double StairsBody::_foot_gap(const Neighbour &p_a, const Vector3 &p_a_shift, con
 		r_normal = (a - b).length() > 1e-9 ? (a - b).normalized() : Vector3(1, 0, 0);
 	}
 	return distance - p_a.radius - p_b.radius;
+}
+
+// Whether footprints `a` and `b`, shifted, are surely more than `gap` apart: their
+// centres are further apart than both extents and `gap` together. Answers without
+// the segment test, as DetourCrowd rejects on squared distance before its square
+// root.
+bool StairsBody::_feet_apart(const Neighbour &p_a, const Vector3 &p_a_shift, const Neighbour &p_b, const Vector3 &p_b_shift, double p_gap) {
+	const double reach = p_a.extent + p_b.extent + p_gap;
+	return reach >= 0.0 && (p_a.centre + p_a_shift - p_b.centre - p_b_shift).length_squared() > reach * reach;
 }
 
 // Once per physics frame, before the first member moves. Every member is read once
@@ -641,6 +668,9 @@ void StairsBody::_crowd_frame() {
 		delta.assign(count, Vector3());
 		bool overlapped = false;
 		for (const std::pair<uint32_t, uint32_t> &pair : s_pairs) {
+			if (_feet_apart(s_snap[pair.first].foot, shift[pair.first], s_snap[pair.second].foot, shift[pair.second], -CROWD_SLOP)) {
+				continue;
+			}
 			Vector3 normal;
 			const double gap = _foot_gap(s_snap[pair.first].foot, shift[pair.first], s_snap[pair.second].foot, shift[pair.second], normal);
 			if (gap >= -CROWD_SLOP) {
@@ -659,12 +689,15 @@ void StairsBody::_crowd_frame() {
 	}
 	for (uint32_t i = 0; i < count; i++) {
 		g_members[i]->_crowd_pending += shift[i];
+		s_snap[i].foot.centre += shift[i];
 	}
 }
 
 // This move's crowd neighbours, where they stand now plus any push they have not
 // yet taken, and whether the body overlaps any of them past the slop. Brings the snapshot up to
-// this physics frame first.
+// this physics frame first. Neighbours are read from the snapshot, which each
+// member updates as it moves, so a member moved by other code during the frame is
+// seen where it stood when the frame began.
 bool StairsBody::_crowd_gather() {
 	_neighbours.clear();
 	if (crowd_layers == 0) {
@@ -683,12 +716,11 @@ bool StairsBody::_crowd_gather() {
 	const CrowdSnap &mine = s_snap[_snap_index];
 	bool overlapping = false;
 	for (uint32_t k = mine.first; k < mine.first + mine.count; k++) {
-		StairsBody *other = s_snap[s_adjacent[k]].body;
-		if (other == nullptr) {
+		const CrowdSnap &other = s_snap[s_adjacent[k]];
+		if (other.body == nullptr) {
 			continue;
 		}
-		Neighbour n = other->_foot_world(other->get_global_transform());
-		n.centre += other->_crowd_pending;
+		Neighbour n = other.foot;
 		Vector3 normal;
 		const double gap = _foot_gap(_me, _crowd_pending, n, Vector3(), normal);
 		// Stacked, not side by side. Anything nearer the pair list already bounds, by
@@ -716,6 +748,9 @@ Vector3 StairsBody::_crowd_solve(const Vector3 &p_motion) {
 	for (int pass = 0; pass < CROWD_PASSES && !_neighbours.is_empty(); pass++) {
 		bool moved = false;
 		for (const Neighbour &n : _neighbours) {
+			if (_feet_apart(_me, offset, n, Vector3(), n.least_gap)) {
+				continue;
+			}
 			Vector3 normal;
 			const double gap = _foot_gap(_me, offset, n, Vector3(), normal);
 			if (gap < n.least_gap) {
@@ -728,6 +763,9 @@ Vector3 StairsBody::_crowd_solve(const Vector3 &p_motion) {
 		}
 	}
 	for (const Neighbour &n : _neighbours) {
+		if (_feet_apart(_me, offset, n, Vector3(), safe_margin)) {
+			continue;
+		}
 		Vector3 normal;
 		const double gap = _foot_gap(_me, offset, n, Vector3(), normal);
 		if (gap > safe_margin) {

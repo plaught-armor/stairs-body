@@ -175,6 +175,9 @@ private:
 		Vector3 centre;
 		Vector3 axis;
 		double radius = 0.0;
+		// Furthest the footprint reaches from its centre: half its length plus its
+		// radius.
+		double extent = 0.0;
 		double floor_y = 0.0;
 		double bottom = 0.0;
 		double top = 0.0;
@@ -255,6 +258,9 @@ private:
 	static double _foot_gap(const Neighbour &p_a, const Vector3 &p_a_shift, const Neighbour &p_b, const Vector3 &p_b_shift, Vector3 &r_normal);
 	Neighbour _foot_world(const Transform3D &p_xform) const;
 	bool _crowd_gather();
+	void _crowd_publish();
+	static bool _feet_apart(const Neighbour &p_a, const Vector3 &p_a_shift, const Neighbour &p_b, const Vector3 &p_b_shift, double p_gap);
+	void _move(double p_time_scale);
 	Vector3 _crowd_solve(const Vector3 &p_motion);
 	bool _still() const;
 	bool _resting();
