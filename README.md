@@ -1,93 +1,39 @@
 # Stairs Body
 
-`StairsBody` is a character body for Godot 4 that walks up and down steps. It
-sweeps the body itself with `body_test_motion` rather than raycasting, so a
-character steps onto whatever its collider would actually fit on.
+`StairsBody` is a character body for Godot 4 that walks up and down stairs. You
+give it a velocity each physics frame, and it moves, slides along walls, climbs
+steps and steps down off ledges. It checks the body's real collider shape
+against the level, so a character steps onto whatever it would actually fit on.
 
-It is a C++ GDExtension built on `AnimatableBody3D`, with its own move loop. It
-is cheap enough to run on crowds, not just on one player.
+It is a C++ GDExtension, cheap enough to run on whole crowds, not just on one
+player. It also has two extras for crowds:
 
-This is a **hard fork** of [Andicraft/stairs-character](https://github.com/Andicraft/stairs-character).
-It does not track upstream and does not send changes back. The four-phase stepping
-algorithm (up, forward, down, commit) is Andrea Jörgensen's, and `StairsBody`
-still follows it.
+- **Crowd separation** keeps a crowd from walking through itself without paying
+  for physics collisions between its members.
+- **The walk grid** lets bodies far from the camera walk a level built from boxes
+  with no physics queries at all.
 
-The test suites run headless under **both** Godot Physics and Jolt, 102 checks,
-green on each.
+Tested headless under both Godot Physics and Jolt: 102 checks, green on each.
 
-## Why a move loop of its own
+How it all works, what it costs and why it is built this way is in
+[docs/technical.md](docs/technical.md). This README sticks to what each part does
+and how to use it.
 
-This fork started as `StairsCharacter`, a GDScript `CharacterBody3D` that ran the
-step check around `move_and_slide`. It was never released, and it has been
-replaced by `StairsBody`. Three findings drove that.
-
-**The frame paid twice.** `move_and_slide` sweeps the body, and the step check
-swept it again to find the step. Tracy put about 50 µs per character per frame
-on it under Godot Physics. Nearly all of that was engine C++: the slide and the
-sweeps. The GDScript itself took about 1.4 µs, so porting that class to C++ could
-not have helped much. The only way to get cheaper was to run fewer queries.
-
-**Fewer queries need a loop of their own.** `StairsBody` replaces
-`move_and_slide` with its own slide loop and makes the step check part of it:
-
-- The main sweep doubles as the step probe.
-- One zero-motion test finds floor contact and catches tunnelling. A grounded
-  body on a static floor whose move met nothing keeps that test's floor for the
-  next centimetre of travel, checking only that nothing moving touches it (see
-  `SETTLE_REACH`). Walking slowly off a ledge, it can overhang the edge by up to
-  that centimetre more before it drops.
-- Gravity is not swept into the floor while the body stands on it; the floor
-  probe keeps it down.
-- A wall that refused a step is remembered, so pressing into it costs nothing
-  extra.
-
-| Situation | Queries per frame |
-|---|---|
-| Walking on flat ground | 2 (the move sweep, the contact test; within 1 cm of the last contact test on a static floor, a shape query in its place) |
-| Standing still on a static floor | 1 shape query once at rest (see below) |
-| Pressed into a wall | 2 (the refused step is cached) |
-| Intent off the motion | +1 (a sweep along intent that only looks for a step), only standing still or against a face intent pushes into |
-| Climbing a step | 5 (move, up, forward, down, contact test) |
-| Leaving a floor | +1 (the floor probe, only where contact is lost) |
-| On a moving platform | +1 (the carry, as its own sweep) |
-| Standing on a body on `step_ignore_layers` | +1 (the contact test again, with the whole mask) |
-| Pressed into a body on `step_ignore_layers` | 3 (move, a sweep past it at floor height, contact test) |
-
-**Then C++, because it is meant for crowds.** With the slide in the class, the
-class's own code became a real share of the frame: 16-34% under Tracy. The target
-is crowds of characters within an 8 ms frame on Steam Deck, where every
-microsecond is multiplied by the crowd size. `StairsBody` was written in GDScript
-first, then ported to C++, and the port took off another 9-20%.
-
-Measured with `test/bench_frame.gd`, 200 characters, in microseconds per character
-per frame:
-
-| | StairsCharacter | StairsBody |
-|---|---|---|
-| Godot Physics, flat ground | 31.6 | 14.0 |
-| Godot Physics, pressed into a wall | 66.6 | 38.1 |
-| Jolt, flat ground | 16.5 | 6.8 |
-| Jolt, pressed into a wall | 42.0 | 19.2 |
-
-Most of what is left is the engine's own sweeps. In a crowd pressed together,
-every sweep also pays to push out of the neighbours the body overlaps; put the
-crowd's own layer in `step_ignore_layers` and the checks that only look for steps
-and floor skip that. A neighbour the move meets is not tried as a step either,
-unless something stands behind it at floor height. `test/bench_pile.gd`, 96
-box-shaped bodies pressed into a pile, runs at about 32 µs per body under Jolt and 48
-under Godot Physics. The same bodies standing still apart (`-- --idle`) cost 2.4 and
-2.6 µs each, the caller's own script included, against 3.7 and 7.2 before a body at
-rest skipped its contact test.
-
-Both GDScript classes, and the benchmarks and diagnostics written for
-`StairsCharacter`, are kept at the git tag `gdscript-final`.
+- [Install](#install)
+- [Quick start](#quick-start)
+- [How it differs from CharacterBody3D](#how-it-differs-from-characterbody3d)
+- [API reference](#api-reference)
+- [Guides](#guides)
+- [Known limits](#known-limits)
+- [Tests](#tests)
+- [Credits](#credits)
 
 ## Install
 
-Copy `addons/stairs-body/` into your project, **keeping the folder name**:
-the library and icon paths are absolute `res://` paths. The `.gdextension` file
-registers `StairsBody` when the project loads. Enabling the plugin in **Project
-Settings > Plugins** is optional; it only lists the addon there.
+Copy `addons/stairs-body/` into your project, **keeping the folder name**. The
+library and icon paths inside are absolute `res://` paths. The class is registered
+as soon as the project loads. Enabling the plugin in **Project Settings > Plugins**
+is optional; it only lists the addon there.
 
 Keep `LICENSE` beside the addon. This is MIT-derived work, and the attribution has
 to travel with the code.
@@ -96,8 +42,8 @@ Prebuilt binaries cover **Linux x86_64** only for now, which includes Steam Deck
 For any other platform, build them:
 
 ```sh
-git clone --recursive https://github.com/plaught-armor/stairs-character
-cd stairs-character
+git clone --recursive https://github.com/plaught-armor/stairs-body
+cd stairs-body
 scons target=template_debug     # loaded by the editor and debug exports
 scons target=template_release   # loaded by release exports
 ```
@@ -107,10 +53,10 @@ against the Godot 4.6 API and loads on 4.6 and newer. Godot only picks up an
 extension after it has scanned the project, so open the project in the editor, or
 run `godot --headless --import`, after the first build.
 
-## Use
+## Quick start
 
-Extend `StairsBody`, give it a `CollisionShape3D` child, and call
-`move_and_stair_step()` every physics frame:
+Make a script that extends `StairsBody`, give the node a `CollisionShape3D` child,
+and call `move_and_stair_step()` every physics frame:
 
 ```gdscript
 extends StairsBody
@@ -123,105 +69,142 @@ func _physics_process(delta: float) -> void:
     move_and_stair_step()
 ```
 
-`StairsBody` is **not** a `CharacterBody3D`. It keeps the familiar names where it
-can: `velocity`, `is_on_floor()`, `is_on_wall()`, `is_on_ceiling()`,
-`get_floor_normal()`, `get_wall_normal()` and `get_platform_velocity()`. There is
-no `move_and_slide()` and no `up_direction`: world up is +Y. In place of the
-slide-collision list there is a [contact list](#contacts). There is also no
-`floor_snap_length`, because the floor probe does that job, reaching
-`step_down_height`.
+Use a `CylinderShape3D` for the collider, with its margin around `0.001`. That is
+the shape the tests use. A capsule works walking down stairs, but its rounded
+bottom is not tested climbing them ([why](docs/technical.md#collider-shape)).
 
-Those getters and the contact list describe where the last `move_and_stair_step()`
-left the body, and only a move updates them. After moving the body any other way
-(setting `global_position`, reparenting it, carrying it without moves), call
-`move_and_stair_step()` before reading them, or they still report the old spot.
+## How it differs from CharacterBody3D
 
-A body at rest skips its checks. With no velocity and no `desired_velocity`, on a
-static floor that carries it nowhere, it makes one cheap shape query per move in
-place of them, while neither it nor its floor has moved and nothing that could
-move into it touches it, and the getters keep the last move's answers. It checks
-again once it is given velocity or intent, is moved, its floor moves or is freed,
-or something that is not static touches it. Two kinds of toucher are passed over,
-since neither can move into it: a StairsBody that collides with it, which stops at
-its surface, and a crowd neighbour. So a still body in a pile of StairsBody nodes
-stays at rest while others press on it, and does not list them. A change to its own
-collider wakes it too: a shape resized, swapped, moved or switched off, as a crouch
-does. So does starting inside something, such as a spawn point set into the floor:
-the body only rests once it is out. A floor that stops colliding, or a StairsBody
-teleported into it, is not seen until the body moves or is moved. Velocity has to be
-exactly zero, so snap one that decays toward zero.
+`StairsBody` is built on `AnimatableBody3D`, **not** `CharacterBody3D`, and runs
+its own move loop. It keeps the familiar names where it can (`velocity`,
+`is_on_floor()`, `get_wall_normal()` and so on), but:
 
-`desired_velocity` is where the controller wants to go this frame. It lets the body
-step up from a standstill while pressed against a step face, where velocity has
-been clipped to zero, and climb a step that intent points at but this frame's
-motion does not. That second sweep only runs where a step can be: standing still,
-or when the last move ended against a steep face that intent pushes into. Motion
-turned by anything else, such as crowd neighbours, costs no extra sweep.
+- there is no `move_and_slide()`; call `move_and_stair_step()` instead;
+- there is no `up_direction`: up is always +Y;
+- there is no `floor_snap_length`: the body always follows the floor down as far
+  as `step_down_height`;
+- in place of the slide-collision list there is a simpler
+  [contact list](#contacts).
 
-Use a `CylinderShape3D` with its margin around `0.001`. Nearly every test case uses
-that shape. A rounded bottom meets a tread's corner before its face, and the floor
-probe reads such a contact as support on the way down; the suites pin a capsule
-walking down, but not climbing.
+What the getters report is where the last `move_and_stair_step()` left the body.
+If you move the body any other way (setting `global_position`, reparenting it),
+call `move_and_stair_step()` before reading them, or they still describe the old
+spot.
 
-## Properties
+A body standing still costs almost nothing: once it has no velocity and nothing
+around it changes, each move is a single cheap check. Velocity has to be exactly
+zero for that, so snap a velocity that decays toward zero.
+[More on resting bodies](docs/technical.md#resting-bodies).
 
-| Property | Default | Purpose |
+## API reference
+
+The same descriptions are in the editor's built-in help for both classes.
+
+### StairsBody
+
+#### Moving
+
+| Method | What it does |
+|---|---|
+| `move_and_stair_step(time_scale = 1.0)` | Moves the body by `velocity` for one physics frame: slides, climbs and steps down. Call it once per physics frame. `time_scale` moves it for that many frames at once, for a body you only move every few frames; see [Moving far bodies less often](#moving-far-bodies-less-often). |
+
+#### What to set each frame
+
+| Property | Default | What it does |
 |---|---|---|
-| `step_height` | `0.33` | Highest step the body climbs. See [below](#why-step_height-defaults-to-033). |
-| `step_down_height` | `-1` | How far the floor probe reaches down to keep the body on the ground or step it down. Negative follows `step_height`. |
-| `min_step_forward` | `0.02` | Shortest distance a step probe looks ahead, whatever the tick rate. See [Tick rate](#tick-rate). |
-| `step_slide_iterations` | `4` | Slides for the forward leg of a step, so a wall beside the stairs does not block the climb. |
-| `floor_max_angle` | 45° | Steepest surface that counts as floor. |
-| `max_slides` | `4` | Slides for the main move. On the floor, a wall met within 15° of head-on stops the slide, as `CharacterBody3D`'s default `wall_min_slide_angle` does. |
-| `safe_margin` | `0.001` | Collision margin for every sweep. |
-| `step_ignore_layers` | none | Layers a step is never placed onto, though the body still collides with them: bodies too small or too self-driving to be a stair. A floor on them holds the body up but never carries it as a platform. A crowd's own layer belongs here, which also makes it much cheaper: see [Contacts](#contacts). |
-| `crowd_layers` | none | Layers of other `StairsBody` nodes this one keeps apart from by crowd separation rather than by collision. Leave those layers out of `collision_mask`. See [Crowds](#crowds). |
-| `velocity` | zero | Velocity in m/s. After each move it is clipped against what the body hit, and its downward part is zeroed on the floor. |
-| `desired_velocity` | zero | Horizontal intent for this frame. Cleared after each move. |
-| `force_stair_step` | `false` | Allow a step this frame while airborne, such as a ledge catch. Cleared after each move. |
+| `velocity` | zero | How fast the body moves, in m/s. After each move it is cut to what the body could actually do: a wall stops the part pushing into it, and the floor stops the part going down. |
+| `desired_velocity` | zero | Where the player or AI wants to go this frame, ignoring what blocked it. Set it to the input direction times speed. It lets a body pressed against a step climb it even when the step has stopped its velocity. Cleared after each move. [Details](docs/technical.md#intent-and-the-step-probe). |
+| `force_stair_step` | `false` | Lets the body step up this frame even though it is in the air, for things like catching a ledge. Cleared after each move. |
 
-The same descriptions are in the editor's built-in help for the class.
+#### Tuning
 
-### Why `step_height` defaults to 0.33
+| Property | Default | What it does |
+|---|---|---|
+| `step_height` | `0.33` | The tallest step the body climbs, in metres. Scale it with your character: [why 0.33](docs/technical.md#why-step_height-defaults-to-033). |
+| `step_down_height` | `-1` | How far the body follows the floor down, onto a lower step or down a slope, before it counts as falling. Negative means "the same as `step_height`". |
+| `min_step_forward` | `0.02` | How far ahead the body always looks for a step, however slow it walks or however high the physics tick rate. Rarely needs changing; [why it exists](docs/technical.md#tick-rate-and-min_step_forward). |
+| `floor_max_angle` | 45° | The steepest slope that counts as floor. Anything steeper is a wall. |
+| `max_slides` | `4` | How many times one move may slide along a wall and carry on. |
+| `step_slide_iterations` | `4` | The same for the forward part of a step, so a wall beside the stairs does not block the climb. |
+| `safe_margin` | `0.001` | How close the body comes to what it hits, in metres. |
+| `step_ignore_layers` | none | Layers the body never steps onto, though it still bumps into them. Use it for things that are too small or move on their own, such as other characters. It also makes a crowd much cheaper: see [Crowds](#crowds). |
+| `crowd_layers` | none | Layers of other `StairsBody` nodes this one keeps apart from without physics collisions. See [Crowds](#crowds). |
+| `walk_grid` | none | A `StairsWalkGrid` to walk on without physics queries. Set it or clear it at any time. See [Walk grid](#walk-grid). |
 
-The number is a compromise between two traditions. The ratio is what carries
-over: scale it with your character, because the absolute value does not.
+#### After a move
 
-| Source | Step height | Character height | Ratio |
-|---|---|---|---|
-| [Quake](https://book.leveldesignbook.com/process/blockout/metrics/quake) / [Source](https://www.worldofleveldesign.com/categories/sourcesdk-authoringtools/hammer-source-player-scale-world-dimensions.php) (`sv_stepsize`) | 18 u | 72 u | 0.25 |
-| [Unreal](https://dev.epicgames.com/documentation/unreal-engine/API/Runtime/Engine/UCharacterMovementComponent) `MaxStepHeight` | 45 cm | 176 cm | 0.256 |
-| [Unity](https://docs.unity3d.com/Manual/class-CharacterController.html) `stepOffset` | recommends 0.1–0.4 | "2 meter sized human" | 0.05–0.20 |
-| [IRC R311.7.5.1](https://codes.iccsafe.org/s/IRC2015/chapter-3-building-planning/IRC2015-Pt03-Ch03-SecR311.7.5) (real stairs) | 19.7 cm max riser | ~180 cm | 0.11 |
+| Method | What it tells you |
+|---|---|
+| `is_on_floor()` | Whether the body is standing on something. |
+| `is_on_wall()` | Whether it is against something too steep to stand on. |
+| `is_on_ceiling()` | Whether its head hit something. |
+| `get_floor_normal()` | Which way the floor it stands on faces. |
+| `get_wall_normal()` | Which way the wall it is against faces. |
+| `get_platform_velocity()` | How fast the moving floor under it is going. |
+| `is_on_walk_grid()` | Whether the last move was made on the walk grid rather than by physics queries. |
 
-The FPS lineage converges on about 0.25. That is deliberately generous, so
-characters walk up crates and rubble, not only stairs. Unity and real building
-codes sit near 0.11–0.15, stairs only.
+#### Contacts
 
-For a 2 m character, `0.33` clears a code-maximum real stair (0.197) with margin,
-sits inside Unity's recommended band, and stays under the 0.25 ratio at which a
-character starts silently climbing crates and low walls.
+What the last move touched, as a list you read by index:
 
-## What it will not step onto
+| Method | Returns |
+|---|---|
+| `get_contact_count()` | How many contacts there are. |
+| `get_contact_collider(index)` | The object touched. |
+| `get_contact_collider_id(index)` | Its instance id, cheaper when you only compare ids. |
+| `get_contact_normal(index)` | Which way the touched surface faces, toward the body. |
+| `get_contact_position(index)` | Where the touch happened. |
 
-A step is placed only onto something the physics server is not simulating: static
-geometry, kinematic platforms and frozen rigid bodies. Placing the body on a loose
-rigid body leaves the solver to push the two apart, and the solver moves the only
-thing that can move. Measured under Jolt, a 0.45 x 0.3 x 0.45 m crate lifted the
-body 1.085 m and threw it at 5.6 m/s. The same rule is exposed as
-`StairsBody.is_step_surface(rid, ignore_layers)` for your own checks.
+The list is emptied at the start of every move. It lists what the body touched on
+its way and where it ended up, including the floor and crowd neighbours. The same
+object can appear more than once. Reading it allocates nothing.
+[What goes into the list](docs/technical.md#the-contact-list).
 
-## Step smoothing
+#### Signals
 
-A step moves the body in one physics frame, which reads as a pop on the camera.
-The class does not hide that itself: the step signals carry the height moved, and
-the easing is yours, so it can do what your game needs, such as holding while a
-foot is in the air or feeding foot IK.
+| Signal | When |
+|---|---|
+| `stepped_up(rise)` | The body climbed onto something higher. |
+| `stepped_down(drop)` | The body stepped down onto something lower. |
+| `stepped(delta)` | Either of those, right after it. `delta` is positive up, negative down. |
 
-Ease a **child**, never the body. The body has to be at the stepped height the
-moment the step resolves, or the collider sits inside the step. Rig it as
-`body -> pivot -> camera`, and push the pivot the opposite way by each step's
-height, then decay the push back to zero:
+Heights are in metres, and are how far the body actually moved. Walking down a
+smooth slope is not a step and emits nothing. The signals fire inside
+`move_and_stair_step()`, so a handler must not call it again. Use them to
+[smooth the camera](#smoothing-the-camera-on-steps).
+[Exact rules](docs/technical.md#signals).
+
+#### Static
+
+| Method | What it does |
+|---|---|
+| `StairsBody.is_step_surface(body_rid, ignore_layers = 0)` | Whether a body could be stepped onto: true for static things, moving platforms and frozen rigid bodies, false for loose rigid bodies and anything on `ignore_layers`. Stepping onto a loose crate would let physics launch the character ([why](docs/technical.md#what-it-will-not-step-onto)). |
+
+### StairsWalkGrid
+
+A `Node3D` that indexes the box-shaped static geometry of a level so bodies can
+walk on it without physics queries. See [Walk grid](#walk-grid).
+
+| Member | What it does |
+|---|---|
+| `collision_mask` | Which layers of static geometry it indexes. Changing it leaves the index out of date until the next `bake()`. |
+| `bake()` | Builds the index from the level as it is now. Runs by itself on first use; call it while the level loads to keep that cost off a frame, and again after changing the level. |
+| `is_baked()` | Whether it has been built. |
+| `is_stale()` | Whether the level has changed since the last `bake()` in a way the index has not followed. It checks every indexed body, so call it after editing the level, not every frame. |
+| `get_box_count()` | How many boxes are indexed. |
+| `get_unknown_count()` | How many static shapes it left out, so bodies near them use physics instead. |
+
+## Guides
+
+### Smoothing the camera on steps
+
+A step moves the body up or down in a single frame, which looks like a pop on the
+camera. The class leaves the smoothing to you, so it can suit your game (holding
+while a foot is in the air, feeding foot IK, and so on).
+
+Smooth a **child** node, never the body itself: the body has to be at the new
+height straight away, or its collider sits inside the step. Put a pivot between
+the body and the camera:
 
 ```
 Player            (extends StairsBody)
@@ -229,7 +212,9 @@ Player            (extends StairsBody)
     └── Camera3D  (head bob, recoil, etc. live here)
 ```
 
-`test/step_ease.gd` is a complete version, and the test suite runs it:
+When the body steps, push the pivot the other way by the same height, so the
+camera holds still, then let the push fade back to zero. `test/step_ease.gd` does
+that, and the test suite runs it:
 
 ```gdscript
 extends Node3D
@@ -280,88 +265,33 @@ func _on_stepped(delta: float) -> void:
 	offset = clampf(offset - delta, -reach, reach)
 ```
 
-`rate` is an exponential decay rate: `1 / rate` is the time constant, so `20`
-settles in about 150 ms. The decay runs at render rate because easing is visual.
-The clamp stops a burst of steps from stacking into a lurch. There is no teleport
-guard, because the signals only ever report a step, never a teleport or a shove.
+`rate` sets how fast the camera catches up: `20` takes about 150 ms, lower feels
+floatier, and past 30 is almost the raw pop.
 
-## Tick rate
-
-Every distance the step check works with comes from `velocity * delta`, so the
-check shrinks as the physics tick rate rises. Without a floor, it does not degrade
-gracefully: it deadlocks. A body parked just short of a step face sends a probe
-that reaches the face with nothing left over, the forward leg moves that nothing,
-and the step is refused, on every frame after.
-
-`min_step_forward` is that floor, `0.02` by default: the same value, for the same
-reason, as Jolt's `mWalkStairsMinStepForward`. It only lengthens the probe. The
-body still moves only as far as its velocity carries it. It matters more under
-Jolt, which parks a blocked body about 4.2 mm off the face where Godot Physics
-parks it flush.
-
-### Moving a body less often than every frame
+### Moving far bodies less often
 
 A body far from the camera can be moved every other frame, or every fourth, to
-save its cost. Skip the call on the frames in between, and on the frames it moves,
-pass the stretch as `time_scale`, with `velocity` and `desired_velocity` left at
-their real values:
+save its cost. Skip the call on the frames in between. On the frames it moves,
+pass how many frames it covers as `time_scale`, and leave `velocity` and
+`desired_velocity` at their normal values:
 
 ```gdscript
 if Engine.get_physics_frames() % 2 == 0:
-    velocity.y -= gravity * delta * 2.0   # the caller's own integration stretches too
+    velocity.y -= gravity * delta * 2.0   # your own gravity covers two frames too
     move_and_stair_step(2.0)
 ```
 
-The move then covers two frames' worth of time: the step probe, a moving floor's
-carry and the floor it keeps follow the stretched frame. Crowd separation reaches
-as far as the body walks, and a push the crowd pass gives it on a frame it skips
-is kept for its next move. Scaling `velocity` instead gets the slide right but not
-those: the crowd pass reads the unscaled velocity and lists neighbours a frame
-late, and a moving floor carries the body half as far.
+Don't double `velocity` instead: stepping, moving floors and crowd separation
+would then still work frame by frame.
+[Details](docs/technical.md#time-scale).
 
-## Signals
+### Crowds
 
-| Signal | Emitted |
-|---|---|
-| `stepped_up(rise)` | The body was raised onto a higher surface. |
-| `stepped_down(drop)` | The floor probe set the body down onto a lower surface. |
-| `stepped(delta)` | Either of the above, right after the specific one. |
-
-The heights are in metres and are how far the body actually moved, not how far it
-was allowed to reach. `drop` is never more than the whole move's descent: a move
-that ends higher than it started is no step down. `rise` and `drop` are positive;
-`delta` is signed, positive up. A move emits at most one step, so a move that
-steps emits `stepped` and exactly one of the other two. Keeping contact with the
-floor while walking down a slope is not a step and emits nothing.
-
-All three fire inside `move_and_stair_step()`, after the move is final, so a
-handler must not call back into it. Build your own [step smoothing](#step-smoothing)
-on them.
-
-## Contacts
-
-`get_contact_count()` and, per index, `get_contact_collider()`,
-`get_contact_collider_id()`, `get_contact_normal()` and `get_contact_position()`
-list what the last `move_and_stair_step()` touched. The getters are flat so
-reading them allocates nothing, and `get_contact_collider_id()` skips the object
-lookup for code that only compares ids.
-
-The list holds contacts on the path the body took: each slide sweep, the sweeps of
-a step it committed, a moving floor's carry, and the floor probe when it set the
-body down. It also holds the resting contacts of the check after the move, floor
-included, so a body leaning on something without moving still lists it. That check
-skips bodies on `step_ignore_layers` unless the body is standing on one: in a crowd
-pressed together, pushing out of every neighbour is most of what it costs, and the
-slide already lists the neighbours the body moves into. A step the body tried and
-refused lists none of its sweeps. The list is cleared at the start of every move.
-A collider can appear more than once, and the order carries no meaning.
-
-## Crowds
-
-In a crowd pressed together, most of each move is the engine pushing the body out
-of the neighbours it touches, inside every sweep. Crowd separation takes the crowd
-out of the sweeps. Put the crowd on its own layer, leave that layer out of each
-member's `collision_mask`, and set `crowd_layers` to it:
+A crowd of `StairsBody` nodes that collide with each other is expensive, because
+every physics query has to push each body out of the neighbours it touches. Crowd
+separation keeps them apart by simple geometry instead. Put the crowd on its own
+layer, leave that layer out of each member's `collision_mask`, and set
+`crowd_layers` to it:
 
 ```gdscript
 member.collision_layer = CROWD
@@ -370,78 +300,34 @@ member.crowd_layers = CROWD
 member.step_ignore_layers = CROWD
 ```
 
-Members then keep apart by geometry the way crowd libraries do (DetourCrowd,
-position-based crowds). Each member's footprint is a capsule lying flat, measured
-once from its shapes' bounds, and is kept apart in two ways:
+Members then stop when they walk into each other, push apart when they overlap,
+and list each other as contacts. In a pile of 96 this is three to four times
+cheaper than collision.
 
-- Once per physics frame, before the first member moves, every pair that overlaps
-  by more than the slop (below) is pushed back to touching, each taking half. A member
-  takes its push as part of its own next move, so the push is swept against the
-  world with the move and never shoves the member into a wall. A member not moved
-  that frame keeps its push for its next move.
-- Each move's own motion is kept out of the neighbours, so a member walking into
-  one stops at it, as a sweep would stop it. A member wedged between neighbours,
-  whose move can be kept out of one only by pushing it into another, has its own
-  motion cut until it fits, down to none, and counts the neighbours it was wedged
-  against as touched. Without the cut, a long move, such as one stretched by
-  `time_scale`, ended inside them: at a time scale of 4 a pile of 96 overlapped by
-  35 mm on average, against 6.5 mm now at any time scale.
-
-Neighbours are read from a snapshot taken at the start of the frame, which each
-member brings up to date as it moves, so no move asks the engine where its
-neighbours are. A member moved or turned by other code during the frame, after
-its own move, is seen as it was when the frame began, or as its move left it,
-until the next frame.
-
-Neighbours touched are listed in the [contact list](#contacts), with the other
-member as collider and a horizontal normal pointing back at this body, and
-velocity is clipped against them.
-
-`test/bench_pile.gd -- --crowd`, 96 box-shaped bodies pressed into a pile, costs 12.3
-µs per body on Godot Physics and 8.9 on Jolt, against 47 and 32 with collision. Of
-that, the separation itself is under 3 µs; the rest is the sweeps against the
-floor. The same bodies standing apart and still cost what they cost without it.
-
-What changes:
+What to expect:
 
 - Members never stand on each other. A pile stays one deep.
-- Footprints may overlap by up to 5 mm, the slop, and separation leaves that alone,
-  as Box2D's contact solver does. Pushed back to touching every frame, a still pile
-  was nudged forever and its members almost never rested; with the slop, about two
-  thirds of still members in a pile of 96 rest.
-- The footprint is a capsule. A box's corners stick out of it, so box-shaped
-  members can overlap corner to corner, by up to about 40% of their width: 8-12 mm
-  on average and about 25 mm at worst in that pile of 60 mm wide bodies.
-- Only members see each other this way. Anything else on the layer, and any body
-  that keeps the layer in its mask (a player walking through the crowd), collides
-  with members as usual.
-- Moving or resizing a member's shapes after it first moves is not seen: the
-  footprint is measured once.
+- Each member is treated as a rounded shape lying flat, sized from its collider.
+  Box-shaped members can overlap slightly at the corners.
+- Members may overlap by up to 5 mm before they are pushed apart, so a still crowd
+  can come to rest.
+- Only members see each other this way. Anything else, such as a player walking
+  through the crowd, collides with them as usual.
+- The member's size is measured once. Changing its collider later is not seen.
 
-## Walk grid
+[How separation works and what it costs](docs/technical.md#crowd-separation).
 
-A crowd far from the camera does not need a physics query per move. Shipped games
-walk their crowds on baked navigation data and hand an agent to physics only when
-it is shoved or falls, as Unreal's navmesh walking mode does. `StairsWalkGrid` does that for levels built from boxes: a
-body given one moves over the level's boxes analytically, with no physics query,
-and makes its ordinary sweeps wherever the grid cannot answer.
+### Walk grid
 
-`test/bench_frame.gd -- --grid`, in microseconds per character per frame:
+Bodies far from the player don't need exact physics. `StairsWalkGrid` lets them
+walk a level built from boxes (floors, stair treads, walls, platforms) by simple
+geometry, with no physics queries at all, which is 10 to 30 times cheaper per body.
+Wherever the grid can't answer, a body falls back to its normal physics moves by
+itself.
 
-| | Grid | Godot Physics | Jolt |
-|---|---|---|---|
-| walking, flat ground | 0.6 | 15.6 | 6.5 |
-| pressed into a tall wall | 1.3 | 41 | 19 |
-| climbing a flight | 1.0 | 18.4 | 12.1 |
-
-In the pile of 96 (`bench_pile.gd -- --crowd --grid`) a body costs 4.4 µs, against
-12.3 and 8.9; the grid's own work is about 0.3 µs of that.
-
-### Setting it up
-
-Add a `StairsWalkGrid` under the level's root, beside its static geometry. It bakes
-the `StaticBody3D` nodes under its parent. Baking is lazy, on the first move that
-uses it, so bake it while the level loads to keep that cost off a frame:
+**Set it up.** Add a `StairsWalkGrid` under the level's root, beside its static
+geometry. It indexes the `StaticBody3D` nodes under its parent. Bake it while the
+level loads:
 
 ```gdscript
 @onready var _grid: StairsWalkGrid = $StairsWalkGrid
@@ -450,10 +336,9 @@ func _ready() -> void:
     _grid.bake()
 ```
 
-Then choose, per body, which moves use it. A body sees nothing that moves while it
-walks on the grid (below), so keep the ones near the player and near moving things
-off it. Distance is the usual rule, and it combines with `time_scale` for bodies
-moved less often:
+**Choose which bodies use it.** A body on the grid sees only the level's boxes,
+not anything that moves: not the player, not doors or platforms, not other
+characters. So keep bodies near the player off it. Distance is the usual rule:
 
 ```gdscript
 func _physics_process(delta: float) -> void:
@@ -463,14 +348,14 @@ func _physics_process(delta: float) -> void:
     move_and_stair_step()
 ```
 
-`is_on_walk_grid()` says which way the last move went. Switching is free: set
-`walk_grid` at any time, including every frame.
+Switching is free: set `walk_grid` at any time, even every frame.
+`is_on_walk_grid()` tells you which way the last move went.
 
-Distance to the player covers the player only. To keep bodies off the grid near
-anything else that moves (a door, a rolling prop, a platform), ask the physics
-space whether one is near. A shape query is a physics query, the cost the grid
-saves, so ask every few frames rather than every frame, and pad the radius by
-how far the body and the mover can close in that time:
+**Keep bodies off it near moving things.** Distance to the player covers only the
+player. For doors, rolling props or platforms, ask physics every few frames
+whether one is near. That query is the kind of cost the grid saves, so don't ask
+every frame, and make the radius big enough to cover how far things move between
+checks:
 
 ```gdscript
 const MOVERS: int = 1 << 3 # the layers of things that move; not the crowd's own
@@ -495,86 +380,36 @@ func _physics_process(delta: float) -> void:
     move_and_stair_step()
 ```
 
-Adding the instance id spreads the checks of a crowd over the frames.
+Adding the instance id spreads a crowd's checks over different frames.
 
-### What a move on the grid does
+**Give a crowd on the grid `crowd_layers`.** Bodies on the grid don't collide with
+each other at all, so without [crowd separation](#crowds) they walk through each
+other.
 
-- It slides along boxes taller than `step_height`, stopping `safe_margin` short.
-- It steps up onto the highest box top under its footprint that is no higher than
-  `step_height`, and steps down within the step-down reach.
-- Crowd separation, the signals and the floor, wall and contact getters work as
-  they do with sweeps.
+**Levels it can walk.** The grid indexes only boxes that stand upright (turned
+around the vertical only). Everything else static is left to physics, and bodies
+use their normal moves near it:
 
-A move is made by sweeps instead, and the body returns to the grid once it stands
-on a baked box again, when:
+- other shapes: trimeshes, heightmaps, cylinders, spheres, `WorldBoundaryShape3D`;
+- boxes tilted off the vertical, such as a ramp;
+- static bodies on layers outside the grid's `collision_mask`;
+- conveyors, which carry bodies along.
 
-| The body | because |
-|---|---|
-| is not on a floor, or is rising | a fall or a jump is physics |
-| stands on a floor the grid did not bake | a conveyor, a moving platform, another shape |
-| would drop further than the step-down reach | it falls, by sweeps |
-| would step up under a ceiling too low for it | the sweeps refuse that step |
-| is near a static shape the grid left out | see below |
-| is more than 5 mm from the grid's floor | it is not standing where the grid says |
+So a level built from boxes walks on the grid almost everywhere. A level whose
+ground is one imported mesh does not: bodies there always use physics.
 
-### Levels the grid can walk
+**Changing the level.** Freeing a box the grid indexed removes it from the grid
+straight away. Anything else (adding static bodies, moving them, changing their
+layers or the grid's `collision_mask`) is not seen until you call `bake()` again.
+Adding a body and changing the mask print a warning; `is_stale()` tells you
+whether a re-bake is needed.
 
-The grid bakes `StaticBody3D` boxes turned only about the vertical, on its
-`collision_mask`. Everything else static is a region it leaves to the sweeps:
+[How the grid works and what it costs](docs/technical.md#walk-grid).
 
-- Other shapes: a trimesh, a heightmap, cylinders, spheres, `WorldBoundaryShape3D`.
-- Boxes tilted off the vertical, such as a ramp.
-- Static bodies on layers outside the grid's mask. A body that collides with them
-  sweeps near them.
-- Conveyors, static bodies with a constant velocity.
+### Running under Jolt
 
-So a level built from boxes (floors, treads, walls, platforms) walks on the grid
-almost everywhere. A level whose ground is one imported trimesh does not: the whole
-ground is a region the grid leaves out, and bodies there always sweep. Build the
-walkable parts from boxes to use it.
-
-A body on the grid does not see anything that moves: moving platforms, rigid
-bodies, a player, and other `StairsBody` nodes. Bodies on the grid keep apart from
-each other only by crowd separation, so give a crowd that walks on it
-`crowd_layers` (see [Crowds](#crowds)); without it they walk through each other.
-
-The grid follows the level only part of the way. A baked body that leaves the
-tree, such as a wall freed or a crate removed, drops out of the index at once.
-Anything else leaves the index stale until `bake()` is called again: a static
-body added under the grid's parent, a baked body moved or given other layers,
-or a change to the grid's `collision_mask`. Until then the grid keeps answering
-from the old bake. Adding a static body and changing the mask each print a
-warning; `is_stale()` catches all of them, at the cost of a pass over the baked
-bodies, so call it after editing the level rather than every frame.
-
-Other differences from the sweeps:
-
-- The footprint is the crowd footprint, a capsule lying flat. A box-shaped body's
-  corners stick out of it and can overlap a wall slightly on the grid.
-- A step up under Godot Physics carries a body up to `min_step_forward` past where
-  its velocity takes it; on the grid a moving body goes only as far as its
-  velocity takes it.
-- Main thread only, as crowd separation is.
-
-## Physics engines
-
-Godot Physics is the project default. Jolt is a first-class target, because it is
-where Godot is heading, and it is also the cheaper engine here: see the table
-above. Two Jolt behaviours needed handling, and a test pins each:
-
-- **Dropped contacts.** Jolt's `body_test_motion` ignores contacts that do not
-  oppose the motion. Just past a ledge edge, a sweep can then report no hit and
-  full travel after passing into the floor below. `StairsBody` checks for that
-  after every move, and when it finds the body embedded it redoes the move with
-  every sweep verified by a shape cast.
-- **Rounded edges.** Jolt rounds box edges by their margin. A flat-bottomed body
-  walking down treads meets that curve with a steep normal, and it went airborne
-  until the floor probe learned to shift off the curve and probe again. Climbing,
-  a step can land with only the rim over the nosing; the next move follows the
-  curve up and the probe sets it back down, which is why `stepped_down` never
-  reports more than the move's net descent.
-
-To run under Jolt, drop an `override.cfg` beside `project.godot`:
+Both Godot Physics and Jolt are supported and tested, and Jolt is the cheaper of
+the two here. To run under Jolt, drop an `override.cfg` beside `project.godot`:
 
 ```ini
 [physics]
@@ -582,33 +417,34 @@ To run under Jolt, drop an `override.cfg` beside `project.godot`:
 3d/physics_engine="Jolt Physics"
 ```
 
+[Jolt behaviours the class works around](docs/technical.md#physics-engines).
+
+## Known limits
+
+- Up is always +Y.
+- Only tested with cylinder colliders when climbing.
+- Crowd separation and the walk grid run on the main thread only.
+- Crowd members never stand on each other.
+- A body on the walk grid does not see anything that moves.
+- Prebuilt binaries are Linux x86_64 only.
+
 ## Tests
 
     test/run.sh
 
-Runs three headless suites and exits with the total number of failures:
-
-- `test/test_stairs.gd`, 43 checks. They began as `StairsCharacter`'s suite and
-  kept its case numbers, so the gaps are cases that tested that class's own API.
-- `test/test_stairs_body.gd`, 37 checks for machinery the first suite does not
-  reach: the tunnel guard, the refusal cache, the loose-step rule, the Jolt edge
-  handling, `step_ignore_layers`, the contact list and crowd separation.
-- `test/test_walk_grid.gd`, 22 checks that run each scenario on a walk grid and by
-  sweeps, and compare where the two end.
-
-Each builds its worlds procedurally. Build the extension with `scons` first;
-`run.sh` stops if the library is missing. Point `GODOT` at a binary if the defaults
-in `run.sh` do not exist on your machine: `GODOT=/path/to/godot test/run.sh`.
-
-Nothing in `test/` ships with the addon. `bench_frame.gd` measures the per-frame
-cost above, `bench_pile.gd` measures a crowd pressed together, and
-`bench_primitive.gd` measures what each physics query costs by itself.
+Runs the three headless test suites and exits with the number of failures. Build
+the extension with `scons` first. If Godot is not where `run.sh` expects it, point
+`GODOT` at your binary: `GODOT=/path/to/godot test/run.sh`. Nothing in `test/`
+ships with the addon. [What the suites and benchmarks
+cover](docs/technical.md#tests-and-benchmarks).
 
 ## Credits
 
-The stepping algorithm is [Andrea Jörgensen's](https://github.com/Andicraft/stairs-character),
-MIT licensed. This fork is maintained at
-[plaught-armor/stairs-character](https://github.com/plaught-armor/stairs-character).
+This is a **hard fork** of [Andicraft/stairs-character](https://github.com/Andicraft/stairs-character).
+It does not track upstream and does not send changes back. The stepping algorithm
+(up, forward, down, commit) is [Andrea Jörgensen's](https://github.com/Andicraft/stairs-character),
+MIT licensed, and `StairsBody` still follows it. This fork is maintained at
+[plaught-armor/stairs-body](https://github.com/plaught-armor/stairs-body).
 
 MIT either way, and Andrea's copyright notice stays in `LICENSE`. It is a
 condition of the licence, not a courtesy, and it travels with any copy you make of

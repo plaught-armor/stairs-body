@@ -13,7 +13,7 @@ the library and icon paths are absolute `res://` paths. Enabling the plugin in
 
 The library for your platform has to be in `bin/`. Prebuilt binaries cover Linux
 x86_64, which includes Steam Deck. For anything else, build from the
-[repository](https://github.com/plaught-armor/stairs-character) with `scons`. The
+[repository](https://github.com/plaught-armor/stairs-body) with `scons`. The
 extension loads on Godot 4.6 and newer.
 
 ## Use
@@ -36,14 +36,16 @@ other familiar getters are there. Its properties and signals are documented in t
 editor's built-in help.
 
 Full documentation is in the [repository
-README](https://github.com/plaught-armor/stairs-character).
+README](https://github.com/plaught-armor/stairs-body), including crowd separation
+and `StairsWalkGrid`, which lets distant bodies walk a level built from boxes
+without physics queries.
 
 ## License and provenance
 
 MIT — see `LICENSE` in this directory.
 
 This addon is a hard fork of [Andicraft/stairs-character](https://github.com/Andicraft/stairs-character),
-maintained at [plaught-armor/stairs-character](https://github.com/plaught-armor/stairs-character).
+maintained at [plaught-armor/stairs-body](https://github.com/plaught-armor/stairs-body).
 The stepping algorithm is Andrea Jörgensen's original work; the fork rewrote what
 surrounds it. Both copyright lines in `LICENSE` are required — keep that file
 beside the addon in anything you ship.
