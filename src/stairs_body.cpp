@@ -1204,7 +1204,11 @@ void StairsBody::_slide(Vector3 p_motion, bool p_may_step, double p_delta, bool 
 			// rather than up it.
 			normal = (normal * HORIZONTAL_MASK).normalized();
 		}
-		if (velocity.dot(normal) < 0.0) {
+		// Grounded, a floor met mid-move is a change of slope, not a launch: the next
+		// move follows it at the horizontal speed asked for. Sliding the velocity along
+		// it would turn the climb into upward speed, and a body moving up skips the
+		// floor probe, so it would fly off the crest of every ramp.
+		if (velocity.dot(normal) < 0.0 && !(kind == KIND_FLOOR && p_may_step)) {
 			velocity = velocity.slide(normal);
 		}
 		if (kind == KIND_WALL && p_may_step && (sweep * HORIZONTAL_MASK).normalized().dot(-normal) > HEAD_ON) {
