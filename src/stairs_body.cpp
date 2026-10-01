@@ -1575,12 +1575,23 @@ bool StairsBody::_step_sweeps(const Transform3D &p_at, const Vector3 &p_remainde
 	if (_test_motion(_params)) {
 		_record_contact();
 	}
-	const double rise = _result->get_travel().y;
+	double rise = _result->get_travel().y;
 	if (rise < safe_margin) {
 		return false;
 	}
-	const Transform3D raised = p_at.translated(WORLD_UP * rise);
-	const Transform3D ahead = _step_forward(raised, forward);
+	Transform3D raised = p_at.translated(WORLD_UP * rise);
+	Transform3D ahead = _step_forward(raised, forward);
+	// The full rise can lift the body's top into a lintel over the step: a 5 cm sill
+	// under a 2.0 m doorway refused a 1.75 m body at a 0.33 m step_height. Each retry
+	// halves the rise; every lower rise is inside the range the up sweep found free.
+	for (int retry = 0; retry < STEP_RISE_RETRIES; retry++) {
+		if ((ahead.origin - raised.origin).length() >= safe_margin || rise * 0.5 < safe_margin) {
+			break;
+		}
+		rise *= 0.5;
+		raised = p_at.translated(WORLD_UP * rise);
+		ahead = _step_forward(raised, forward);
+	}
 	if ((ahead.origin - raised.origin).length() < safe_margin) {
 		// Only a leg that had room to move and was blocked says anything about the
 		// wall. A leg shorter than the margin is this frame's leftover travel, and

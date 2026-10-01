@@ -66,6 +66,9 @@ private:
 	// Smallest drop the floor probe reports as a step down rather than as keeping
 	// contact with the floor it was already on.
 	static constexpr double STEP_DOWN_SIGNAL_MIN = 0.01;
+	// How many times a step whose forward leg is blocked at the full rise halves the
+	// rise and tries the leg again. Three reaches an eighth of step_height.
+	static constexpr int STEP_RISE_RETRIES = 3;
 	// Contacts the floor-contact check reads. A wall and a floor at once is the case
 	// that needs more than one, but a body pressed into a crowd touches several
 	// neighbours too, and at four they crowded the floor out of the list: in a pile
